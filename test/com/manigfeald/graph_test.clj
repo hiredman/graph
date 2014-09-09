@@ -1,11 +1,11 @@
 (ns com.manigfeald.graph-test
   (:require [clojure.test :refer :all]
             [com.manigfeald.graph :refer :all]
-            [com.manigfeald.graph.node :refer :all]
             [com.manigfeald.kvgc :as k]
             [loom.graph :as g]
             [loom.attr :as a]
-            [clojure.java.jdbc :as jdbc]))
+            [clojure.java.jdbc :as jdbc])
+  (:import (java.util UUID)))
 
 (defn t-gs []
   (gs (let [con {:connection-uri "jdbc:derby:memory:myDB;create=true"}]
@@ -27,7 +27,8 @@
         graph-id (allocate-graph gs)
         _ (is graph-id)
         g (id-graph gs graph-id)
-        [[a b c] g] (allocate-nodes g 3)
+        [a b c] (repeatedly 3 #(UUID/randomUUID))
+        g (g/add-nodes g a b c)
         _ (is g)
         _ (is a)
         _ (is b)
@@ -43,7 +44,8 @@
         _ (is (contains? (set edges) [c b 0]))
         graph-id2 (allocate-graph gs)
         g2 (id-graph gs graph-id2)
-        [[a2 b2 c2] g2] (allocate-nodes g2 3)
+        [a2 b2 c2] (repeatedly 3 #(UUID/randomUUID))
+        g2 (g/add-nodes g2 a2 b2 c2)
         n (g/nodes g2)
         _ (is (not (contains? (set n) a)))
         _ (is (not (contains? (set n) b)))
@@ -69,7 +71,9 @@
         _ (is (= 4 (g/weight g a c)))
         _ (is (= 0 (g/weight g2 a c)))
         _ (is (= 4 (g/weight g4 a c)))
-        n (transact gs "foo" (fn [g] (allocate-nodes g 1)))
+        n (transact gs "foo" (fn [g]
+                               (let [g (g/add-nodes g (UUID/randomUUID))]
+                                 [(g/nodes g) g])))
         _ (is (= (count n) 1))
         x (transact gs "foo" (fn [g] [(g/nodes g) g]))
         _ (is (= 1 (count x)))
@@ -79,14 +83,12 @@
         _ (transact gs "foo" (fn [g] [(g/nodes g) g]))
         n (g/nodes g4)
         _ (is (= 1 (count n)))
+        [a b] (repeatedly 2 #(UUID/randomUUID))
         e (transact gs "bar" (fn [g]
-                               (let [[[a b] g] (allocate-nodes g 2)
+                               (let [g (g/add-nodes g a b)
                                      g (g/add-edges g [a b])]
                                  [(g/edges g) g])))
         _ (is (= (count e) 1))
-        n (transact gs "w" (fn [g] (allocate-nodes g 25)))
-        n (transact gs "w" (fn [g] (allocate-nodes g 25)))
-        n (transact gs "w" (fn [g] (allocate-nodes g 25)))
         e (transact gs "bar" (fn [g]
                                (let [[a b] (g/nodes g)
                                      g (g/remove-edges g [a b])
