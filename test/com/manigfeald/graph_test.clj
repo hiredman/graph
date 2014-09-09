@@ -4,7 +4,8 @@
             [com.manigfeald.kvgc :as k]
             [loom.graph :as g]
             [loom.attr :as a]
-            [clojure.java.jdbc :as jdbc])
+            [clojure.java.jdbc :as jdbc]
+            [com.manigfeald.graph.alloc :refer [alloc]])
   (:import (java.util UUID)))
 
 (defn t-gs []
