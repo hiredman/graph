@@ -18,6 +18,9 @@
        :node "n"
        :attribute/text "t"}))
 
+(defn allocate-graph [gs]
+  (alloc gs -1 (constantly nil)))
+
 (deftest a-test
   (let [gs (t-gs)
         _ (create-tables! gs)
@@ -75,4 +78,22 @@
         _ (is (= 1 (count n)))
         _ (transact gs "foo" (fn [g] [(g/nodes g) g]))
         n (g/nodes g4)
-        _ (is (= 1 (count n)))]))
+        _ (is (= 1 (count n)))
+        e (transact gs "bar" (fn [g]
+                               (let [[[a b] g] (allocate-nodes g 2)
+                                     g (g/add-edges g [a b])]
+                                 [(g/edges g) g])))
+        _ (is (= (count e) 1))
+        n (transact gs "w" (fn [g] (allocate-nodes g 25)))
+        n (transact gs "w" (fn [g] (allocate-nodes g 25)))
+        n (transact gs "w" (fn [g] (allocate-nodes g 25)))
+        e (transact gs "bar" (fn [g]
+                               (let [[a b] (g/nodes g)
+                                     g (g/remove-edges g [a b])
+                                     _ (is (number? (:id g)))
+                                     g (g/remove-edges g [b a])
+                                     _ (is (number? (:id g)))]
+                                 [(g/edges g) g])))
+        _ (is (= (count e) 0))
+        g (g/add-nodes g 1 2 3)
+        ]))

@@ -4,158 +4,97 @@
             [clojure.java.jdbc :as jdbc]
             [com.manigfeald.graph.node :as n]
             [com.manigfeald.graph.readonly :as ro]
-            [com.manigfeald.kvgc :as k])
+            [com.manigfeald.kvgc :as k]
+            [com.manigfeald.graph.gc :as gc])
   (:import (java.util.concurrent.locks ReentrantReadWriteLock)
-           (java.lang.ref WeakReference)))
+           (java.nio ByteBuffer)
+           (java.lang.ref WeakReference)
+           (java.util UUID)))
 
-;; TODO: this is insane
-
-(defrecord GraphStore [con config rw gc-running? views references mark-state]
-  k/Heap
-  (references [heap ptr]
-    (let [[table id] ptr
-          _ (assert table)
-          _ (assert id)
-          x (case table
-              :named-graph (for [{:keys [graph_id]}
-                                 (jdbc/query con [(format "SELECT graph_id FROM %s WHERE id = ?" (:named-graph config)) id])]
-                             [:graph graph_id])
-              :graph (for [{:keys [id]}
-                           (jdbc/query con [(format "SELECT id FROM %s WHERE graph_id = ?" (:graph-fragments config)) id])]
-                       [:graph-fragments id])
-              :fragment (for [[k v] config
-                              :when (not (contains? #{:named-graph :graph :fragment :graph-fragments} k))
-                              {:keys [id]} (jdbc/query con [(format "SELECT id FROM %s WHERE fragment_id = ?" (k config)) id])]
-                          [k id])
-              :graph-fragments (for [{:keys [fragment_id graph_id]}
-                                     (jdbc/query
-                                      con
-                                      [(format "SELECT graph_id,fragment_id FROM %s WHERE id = ?" (:graph-fragments config)) id])
-                                     i [[:fragment fragment_id]
-                                        [:graph graph_id]]]
-                                 i)
-              :edge (for [{:keys [src dest fragment_id]}
-                          (jdbc/query con [(format "SELECT src,dest,fragment_id FROM %s WHERE id = ?" (:edge config)) id])
-                          n [[:node src]
-                             [:node dest]
-                             [:fragment fragment_id]]]
-                      n)
-              :node (for [{:keys [fragment_id]} (jdbc/query con [(format "SELECT fragment_id FROM %s WHERE id = ?" (:node config)) id])]
-                      [:fragment fragment_id])
-              (if (= "attribute" (namespace table))
-                (for [{:keys [object_type object_id  fragment_id]}
-                      (jdbc/query con [(format "SELECT object_type, object_id, fragment_id FROM %s WHERE id = ?" (table config)) id])
-                      i [[(keyword object_type) object_id]
-                         [:fragment fragment_id]]]
-                  i)
-                (assert nil [table ptr])))]
-      (assert (not (seq (for [[k v] x
-                              :when (or (nil? k) (nil? v))]
-                          true))))
-      x))
-  (tag [heap ptr tag-value]
-    (let [tag-value (case tag-value
-                      true 1
-                      false 0)
-          [table id] ptr
-          table-name (get config table)]
-      (jdbc/update! con table-name {:tag tag-value} ["id = ?" id])
-      heap))
-  (tag-value [heap ptr]
-    (let [[table id] ptr
-          table-name (get config table)]
-      (case (:tag (first (jdbc/query con [(format "SELECT tag FROM %s WHERE id = ?" table-name) id])))
-        nil true
-        1 true
-        0 false)))
-  (free [heap ptr]
-    (let [[table id] ptr
-          table-name (get config table)]
-      (jdbc/delete! con table-name ["id = ?" id])
-      heap))
-  (with-heap-lock [heap fun]
-    (fun heap))
-  clojure.core.protocols/CollReduce
-  (coll-reduce [_ fun]
-    (reduce fun
-            (for [[k v] config
-                  i (case k
-                      :named-graph (map
-                                    (juxt (constantly k) :id)
-                                    (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :graph (map
-                              (juxt (constantly k) :id)
-                              (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :fragment (map
-                                 (juxt (constantly k) :id)
-                                 (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :graph-fragments (map
-                                        (juxt (constantly k) :id)
-                                        (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :edge (map
-                             (juxt (constantly k) :id)
-                             (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :node (map
-                             (juxt (constantly k) :id)
-                             (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      (if (= "attribute" (namespace k))
-                        (map
-                         (juxt (constantly k) :id)
-                         (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                        (assert nil [k v])))]
-              i)))
-  (coll-reduce [_ fun init]
-    (reduce fun
-            init
-            (for [[k v] config
-                  i (case k
-                      :named-graph (map
-                                    (juxt (constantly k) :id)
-                                    (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :graph (map
-                              (juxt (constantly k) :id)
-                              (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :fragment (map
-                                 (juxt (constantly k) :id)
-                                 (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :graph-fragments (map
-                                        (juxt (constantly k) :id)
-                                        (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :edge (map
-                             (juxt (constantly k) :id)
-                             (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      :node (map
-                             (juxt (constantly k) :id)
-                             (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                      (if (= "attribute" (namespace k))
-                        (map
-                         (juxt (constantly k) :id)
-                         (jdbc/query con [(format "SELECT id FROM %s" v)]))
-                        (assert nil [k v])))]
-              [i nil]))))
+(defrecord GraphStore [con config rw gc-running? views references heap])
 
 (defn gs [con config]
-  (->GraphStore con config (ReentrantReadWriteLock.) (atom false) (atom #{}) (atom {}) (atom false)))
+  (->GraphStore con config
+                (ReentrantReadWriteLock.)
+                (atom false)
+                (atom #{})
+                (atom {})
+                (gc/->Heap con config (atom false))))
 
-(defn allocate-graph
-  ([gs]
-     (let [x (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0})]
-       (biginteger (first (vals (first x))))))
+(def max-frag-size 10)
+
+(defn alloc
   ([gs prev-graph]
-     (let [graph-id (first (vals (first (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))]
-       (doseq [frag (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE graph_id = ?"
+     (alloc gs prev-graph (constantly nil)))
+  ([gs prev-graph fun]
+     (let [graph-id (first (vals (first (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))
+           chosen-frag (first (jdbc/query (:con gs)
+                                          [(format "SELECT %s.id AS id, size FROM %s JOIN %s ON %s.id = %s.graph_id WHERE graph_id = ? AND size < ?"
+                                                   (:fragment (:config gs))
+                                                   (:graph-fragments (:config gs))
+                                                   (:fragment (:config gs))
+                                                   (:fragment (:config gs))
                                                    (:graph-fragments (:config gs)))
-                                           prev-graph])]
-         (jdbc/insert! (:con gs) (:graph-fragments (:config gs))
-                       (dissoc (assoc frag :graph_id graph-id) :id)))
+                                           prev-graph
+                                           max-frag-size]))
+           new-frag-id (reduce
+                        (fn [id frag]
+                          (if (= (:id chosen-frag) (:fragment_id frag))
+                            (let [frag-id (first (vals (first (jdbc/insert! (:con gs) (:fragment (:config gs))
+                                                                            {:size (inc (:size chosen-frag))}))))]
+                              (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) {:graph_id graph-id :fragment_id frag-id})
+                              (doseq [[k v] (:config gs)
+                                      :when (not (contains? #{:fragment :named-graph :graph} k))
+                                      item (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE fragment_id = ?" v) (:id chosen-frag)])]
+                                (first (vals (first (jdbc/insert! (:con gs) v (assoc (dissoc item :id :tag)
+                                                                                :fragment_id frag-id)))))))
+                            (do
+                              (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) (dissoc (assoc frag :graph_id graph-id) :id :tag))
+                              id)))
+                        nil
+                        (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE graph_id = ?"
+                                                       (:graph-fragments (:config gs)))
+                                               prev-graph]))]
+       (if new-frag-id
+         (fun (biginteger new-frag-id))
+         (let [frag-id (first (vals (first (jdbc/insert! (:con gs) (:fragment (:config gs)) {:size 1}))))]
+           (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) {:graph_id graph-id :fragment_id frag-id})
+           (fun (biginteger frag-id))))
        (biginteger graph-id))))
 
-(defn allocate-fragment [gs graph-id]
-  (let [frag-id (first (vals (first (jdbc/insert! (:con gs) (:fragment (:config gs)) {:x 0}))))]
-    (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) {:graph_id graph-id :fragment_id frag-id})
-    (biginteger frag-id)))
+(defn copy-without [gs prev-graph frag-id table id]
+  {:pre [(number? prev-graph)
+         (number? frag-id)
+         (keyword? table)
+         (number? id)]}
+  (let [graph-id (first (vals (first (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))
+        new-frag-id (reduce
+                     (fn [id frag]
+                       (if (= frag-id (:fragment_id frag))
+                         (let [frag-id (first (vals (first (jdbc/insert! (:con gs) (:fragment (:config gs)) {:size 0}))))
+                               c (atom 0)]
+                           (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) {:graph_id graph-id :fragment_id frag-id})
+                           (doseq [[k v] (:config gs)
+                                   :when (not (contains? #{:fragment :named-graph :graph} k))
+                                   item (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE fragment_id = ?" v) frag-id])
+                                   :when (not (and (= frag-id (:fragment_id item))
+                                                   (= table k)
+                                                   (= id (:id item))))]
+                             (swap! c inc)
+                             (first (vals (first (jdbc/insert! (:con gs) v (assoc (dissoc item :id :tag)
+                                                                             :fragment_id frag-id))))))
+                           (jdbc/update! (:con gs) (:fragment (:config gs)) {:size @c} ["id = ?" frag-id]))
+                         (do
+                           (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) (dissoc (assoc frag :graph_id graph-id) :id :tag))
+                           id)))
+                     nil
+                     (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE graph_id = ?"
+                                                    (:graph-fragments (:config gs)))
+                                            prev-graph]))]
+    (biginteger graph-id)))
 
 (def text "varchar(1024)")
+(def vid "CHAR(16) FOR BIT DATA")
 
 (defn create-tables! [gs]
   ;; TODO: add indices
@@ -171,8 +110,8 @@
                                             [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
                                             [:x :int]
                                             [:tag :int])
-              :fragment (jdbc/create-table-ddl v [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"] [:size :int]
-                                               [:x :int]
+              :fragment (jdbc/create-table-ddl v [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
+                                               [:size :int]
                                                [:tag :int])
               :graph-fragments (jdbc/create-table-ddl
                                 v
@@ -184,14 +123,16 @@
                      v
                      [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
                      [:fragment_id :int]
-                     [:src :int]
-                     [:dest :int]
+                     [:vid vid]
+                     [:src vid]
+                     [:dest vid]
                      [:weight :int]
                      [:tag :int])
               :node (jdbc/create-table-ddl
                      v
                      [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
                      [:fragment_id :int]
+                     [:vid vid]
                      [:tag :int])
               (if (= "attribute" (namespace k))
                 (jdbc/create-table-ddl
@@ -199,7 +140,7 @@
                  [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
                  [:fragment_id :int]
                  [:object_type text]
-                 [:object_id :int]
+                 [:object_vid vid]
                  [:name text]
                  [:value (let [x (keyword (name k))]
                            (if (= x :text)
@@ -216,12 +157,14 @@
             :when (not (.get wr))]
       (swap! (:views gs) disj graph-id)
       (swap! (:references gs) dissoc graph-id))
-    (let [[_ nms] (k/gc gs (into (set (map (juxt (constantly :named-graph) :id)
-                                           (jdbc/query (:con gs) [(format "SELECT id FROM %s" (:named-graph (:config gs)))])))
-                                 (for [i @(:views gs)]
-                                   [:graph i]))
-                        @(:mark-state gs))]
-      (reset! (:mark-state gs) nms))
+    (let [[_ nms] (k/gc (:heap gs)
+                        (into (set (map (juxt (constantly :named-graph) :id)
+                                        (jdbc/query (:con gs)
+                                                    [(format "SELECT id FROM %s" (:named-graph (:config gs)))])))
+                              (for [i @(:views gs)]
+                                [:graph i]))
+                        @(:mark-state (:heap gs)))]
+      (reset! (:mark-state (:heap gs)) nms))
     nil
     (finally
       (.unlock (.writeLock (:rw gs))))))
@@ -243,7 +186,7 @@
         (assert nil))
       (let [g (or (first (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE name = ?" (:named-graph (:config gs)))
                                                 graph-name]))
-                  {:graph_id (allocate-graph gs)})
+                  {:graph_id (alloc gs -1)})
             ro (ro/->ROG (id-graph gs (biginteger (:graph_id g)))
                          (fn [_] (swap! (:views gs) disj (:graph_id g))))]
         (swap! (:views gs) conj (:graph_id g))
@@ -258,9 +201,11 @@
           (assert nil))
         (let [g (or (first (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE name = ?" (:named-graph (:config gs)))
                                                   graph-name]))
-                    {:graph_id (allocate-graph gs)
+                    {:graph_id (alloc gs -1)
                      :new? true})
               [ret ng] (fun (id-graph gs (biginteger (:graph_id g))))]
+          (assert ng)
+          ;; TODO: per graph lock here
           (if-not (locking gs
                     (let [cg (or (first (jdbc/query
                                          (:con gs)
@@ -269,18 +214,19 @@
                                  {:graph_id (:graph_id g)})]
                       (if (= (:graph_id cg) (:graph_id g))
                         (do
-                          ;; TODO: fragment compression
                           (if (:new? g)
                             (do
+                              (assert (:id ng))
                               (jdbc/insert! (:con gs) (:named-graph (:config gs))
                                             {:graph_id (:id ng)
                                              :name graph-name}))
                             (do
                               (assert (:id g))
+                              (assert (:id ng))
                               (jdbc/update! (:con gs)
                                             (:named-graph (:config gs))
                                             {:graph_id (:id ng)}
-                                            ["id = ?" (:id g)])))
+                                            ["name = ?" graph-name])))
                           true)
                         false)))
             (recur (inc i))
@@ -292,62 +238,112 @@
           (finally
             (reset! (:gc-running? gs) false)))))))
 
+(defn vid-of [data]
+  (let [b (byte-array 16)
+        bb (ByteBuffer/wrap b)]
+    (if (instance? UUID data)
+      (do
+        (.putLong bb (.getMostSignificantBits ^UUID data))
+        (.putLong bb (.getLeastSignificantBits ^UUID data)))
+      (do
+        (.putLong bb (long data))
+        (.putLong bb 0)))
+    b))
+
+(defn bytes->uuid [bytes]
+  (let [bb (ByteBuffer/wrap bytes)
+        m (.getLong bb)
+        l (.getLong bb)]
+    (UUID. m l)))
+
 (defrecord G [gs id]
   n/HasNodes
   (allocate-nodes [g n]
-    (let [[graph-id nodes]
-          (reduce
-           (fn [[graph nodes] _]
-             (let [graph (allocate-graph gs graph)
-                   fragment-id (allocate-fragment gs graph)
-                   node-id
-                   (first (vals (first (jdbc/insert! (:con gs)
-                                                     (:node (:config gs))
-                                                     {:fragment_id fragment-id}))))]
-               [graph (conj nodes (biginteger node-id))]))
-           [id []]
-           (repeat n :foo))]
-      [nodes (->G gs graph-id)]))
+    (let [nodes (repeatedly n #(UUID/randomUUID))]
+      [nodes (g/add-nodes* g  nodes)]))
   g/EditableGraph
+  (add-nodes* [g nodes]
+    (->G gs (reduce
+             (fn [graph node]
+               (alloc gs graph (fn [fragment-id]
+                                 (jdbc/insert! (:con gs)
+                                               (:node (:config gs))
+                                               {:fragment_id fragment-id
+                                                :vid (vid-of node)}))))
+             id
+             nodes)))
   (add-edges* [g edges]
     (->G gs (reduce
              (fn [graph [src target weight]]
-               (let [graph (allocate-graph gs graph)
-                     fragment-id (allocate-fragment gs graph)]
-                 (jdbc/insert! (:con gs)
-                               (:edge (:config gs))
-                               {:src src
-                                :fragment_id fragment-id
-                                :dest target
-                                :weight (or weight 0)})
-                 graph))
+               (alloc gs graph (fn [fragment-id]
+                                 (jdbc/insert! (:con gs)
+                                               (:edge (:config gs))
+                                               {:vid (vid-of (UUID/randomUUID))
+                                                :src (vid-of src)
+                                                :fragment_id fragment-id
+                                                :dest (vid-of target)
+                                                :weight (or weight 0)}))))
              id
              edges)))
-
+  (remove-edges* [g edges]
+    (->G gs (reduce
+             (fn [gid [src dest]]
+               (assert (or (number? src)
+                           (instance? UUID src))
+                       src)
+               (assert (or (number? src)
+                           (instance? UUID src))
+                       dest)
+               (reduce
+                (fn [gid {:keys [id fid]}]
+                  (copy-without gs gid fid :edge id))
+                gid
+                (jdbc/query (:con gs) [(format "
+SELECT %s.id, %s.fragment_id AS fid FROM %s
+  JOIN %s ON %s.fragment_id = %s.fragment_id
+  WHERE src = ?
+  AND dest = ?
+  AND %s.graph_id = ?
+"
+                                               (:edge (:config gs))
+                                               (:edge (:config gs))
+                                               (:edge (:config gs))
+                                               (:graph-fragments (:config gs))
+                                               (:graph-fragments (:config gs))
+                                               (:edge (:config gs))
+                                               (:graph-fragments (:config gs)))
+                                       (vid-of src)
+                                       (vid-of dest)
+                                       gid])))
+             id
+             edges)))
   g/Graph
   (nodes [this]
-    (mapv :id (jdbc/query (:con gs) [(format "
-SELECT %s.id AS id FROM %s
+    (mapv (comp bytes->uuid :id) (jdbc/query (:con gs) [(format "
+SELECT %s.vid AS id FROM %s
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.id = %s.graph_id
   WHERE %s.id = ?
 "
-                                             (:node (:config gs))
-                                             (:node (:config gs))
-                                             (:fragment (:config gs))
-                                             (:node (:config gs))
-                                             (:fragment (:config gs))
-                                             (:graph-fragments (:config gs))
-                                             (:graph-fragments (:config gs))
-                                             (:fragment (:config gs))
-                                             (:graph (:config gs))
-                                             (:graph (:config gs))
-                                             (:graph-fragments (:config gs))
-                                             (:graph (:config gs)))
-                                     id])))
+                                                                (:node (:config gs))
+                                                                (:node (:config gs))
+                                                                (:fragment (:config gs))
+                                                                (:node (:config gs))
+                                                                (:fragment (:config gs))
+                                                                (:graph-fragments (:config gs))
+                                                                (:graph-fragments (:config gs))
+                                                                (:fragment (:config gs))
+                                                                (:graph (:config gs))
+                                                                (:graph (:config gs))
+                                                                (:graph-fragments (:config gs))
+                                                                (:graph (:config gs)))
+                                                        id])))
   (edges [this]
-    (mapv (juxt :src :dest :weight)
+    (assert (number? id))
+    (mapv (juxt (comp bytes->uuid :src)
+                (comp bytes->uuid :dest)
+                :weight)
           (jdbc/query (:con gs) [(format "
 SELECT src,dest,weight FROM %s
   JOIN %s ON %s.fragment_id = %s.id
@@ -374,7 +370,7 @@ SELECT %s.id AS id FROM %s
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.id = %s.graph_id
   WHERE %s.id = ?
-  AND %s.id = ?
+  AND %s.vid = ?
 "
                                                  (:node (:config gs))
                                                  (:node (:config gs))
@@ -389,7 +385,7 @@ SELECT %s.id AS id FROM %s
                                                  (:graph-fragments (:config gs))
                                                  (:graph (:config gs))
                                                  (:node (:config gs)))
-                                         id node]))))
+                                         id (vid-of node)]))))
   (has-edge? [this src dest]
     (boolean (seq (jdbc/query (:con gs) [(format "
 SELECT %s.id AS id FROM %s
@@ -414,12 +410,12 @@ SELECT %s.id AS id FROM %s
                                                  (:graph (:config gs))
                                                  (:edge (:config gs))
                                                  (:edge (:config gs)))
-                                         id src dest]))))
+                                         id (vid-of src) (vid-of dest)]))))
   ;; TODO:
   (successors [g]
     (partial g/successors g))
   (successors [this node]
-    (mapv :dest (jdbc/query (:con gs) [(format "
+    (mapv (comp bytes->uuid :dest) (jdbc/query (:con gs) [(format "
 SELECT DISTINCT %s.dest FROM %s
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.fragment_id = %s.id
@@ -427,24 +423,26 @@ SELECT DISTINCT %s.dest FROM %s
   WHERE %s.id = ?
   AND %s.src = ?
 "
-                                               (:edge (:config gs))
-                                               (:edge (:config gs))
-                                               (:fragment (:config gs))
-                                               (:edge (:config gs))
-                                               (:fragment (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:fragment (:config gs))
-                                               (:graph (:config gs))
-                                               (:graph (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:graph (:config gs))
-                                               (:edge (:config gs)))
-                                       id node])))
+                                                                  (:edge (:config gs))
+                                                                  (:edge (:config gs))
+                                                                  (:fragment (:config gs))
+                                                                  (:edge (:config gs))
+                                                                  (:fragment (:config gs))
+                                                                  (:graph-fragments (:config gs))
+                                                                  (:graph-fragments (:config gs))
+                                                                  (:fragment (:config gs))
+                                                                  (:graph (:config gs))
+                                                                  (:graph (:config gs))
+                                                                  (:graph-fragments (:config gs))
+                                                                  (:graph (:config gs))
+                                                                  (:edge (:config gs)))
+                                                          id (vid-of node)])))
   (out-degree [this node]
     (count (g/successors this node)))
   (out-edges [this node]
-    (mapv (juxt :src :dest :weight)
+    (mapv (juxt (comp bytes->uuid :src)
+                (comp bytes->uuid :dest)
+                :weight)
           (jdbc/query (:con gs) [(format "
 SELECT %s.src, %s.dest, %s.weight FROM %s
   JOIN %s ON %s.fragment_id = %s.id
@@ -468,7 +466,7 @@ SELECT %s.src, %s.dest, %s.weight FROM %s
                                          (:graph-fragments (:config gs))
                                          (:graph (:config gs))
                                          (:edge (:config gs)))
-                                 id node])))
+                                 id (vid-of node)])))
   a/AttrGraph
   (add-attr [g node-or-edge k v]
     (assert (keyword? k))
@@ -478,13 +476,15 @@ SELECT %s.src, %s.dest, %s.weight FROM %s
                                             :when (= "attribute" (namespace k))
                                             :when (= type (name k))]
                                         v))
-          object-type (if (number? node-or-edge)
+          object-type (if (or (number? node-or-edge)
+                              (instance? UUID node-or-edge))
                         "node"
                         "edge")
           object-id (case object-type
                       "node" node-or-edge
-                      "edge" (:id (first (jdbc/query (:con gs) [(format "
-SELECT %s.id FROM %s
+                      ;; TODO: needs test here
+                      "edge" (:vid (first (jdbc/query (:con gs) [(format "
+SELECT %s.vid FROM %s
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.id = %s.graph_id
@@ -492,31 +492,31 @@ SELECT %s.id FROM %s
   AND %s.src = ?
   AND %s.dest = ?
 "
-                                                                        (:edge (:config gs))
-                                                                        (:edge (:config gs))
-                                                                        (:fragment (:config gs))
-                                                                        (:edge (:config gs))
-                                                                        (:fragment (:config gs))
-                                                                        (:graph-fragments (:config gs))
-                                                                        (:graph-fragments (:config gs))
-                                                                        (:fragment (:config gs))
-                                                                        (:graph (:config gs))
-                                                                        (:graph (:config gs))
-                                                                        (:graph-fragments (:config gs))
-                                                                        (:graph (:config gs))
-                                                                        (:edge (:config gs))
-                                                                        (:edge (:config gs)))
-                                                                id]))))]
-      (->G gs (let [graph (allocate-graph gs id)
-                    fragment-id (allocate-fragment gs graph)]
-                (jdbc/insert! (:con gs)
-                              table-for-value-type
-                              {:fragment_id fragment-id
-                               :object_type object-type
-                               :object_id object-id
-                               :name (name k)
-                               :value v})
-                graph))))
+                                                                         (:edge (:config gs))
+                                                                         (:edge (:config gs))
+                                                                         (:fragment (:config gs))
+                                                                         (:edge (:config gs))
+                                                                         (:fragment (:config gs))
+                                                                         (:graph-fragments (:config gs))
+                                                                         (:graph-fragments (:config gs))
+                                                                         (:fragment (:config gs))
+                                                                         (:graph (:config gs))
+                                                                         (:graph (:config gs))
+                                                                         (:graph-fragments (:config gs))
+                                                                         (:graph (:config gs))
+                                                                         (:edge (:config gs))
+                                                                         (:edge (:config gs)))
+                                                                 id
+                                                                 ]))))]
+      (->G gs (alloc gs id
+                     (fn [fragment-id]
+                       (jdbc/insert! (:con gs)
+                                     table-for-value-type
+                                     {:fragment_id fragment-id
+                                      :object_type object-type
+                                      :object_vid (vid-of object-id)
+                                      :name (name k)
+                                      :value v}))))))
   (attr [g node-or-edge k]
     (assert (keyword? k))
     (assert (namespace k))
@@ -525,7 +525,8 @@ SELECT %s.id FROM %s
                                             :when (= "attribute" (namespace k))
                                             :when (= type (name k))]
                                         v))
-          object-type (if (number? node-or-edge)
+          object-type (if (or (number? node-or-edge)
+                              (instance? UUID node-or-edge))
                         "node"
                         "edge")
           object-id (case object-type
@@ -558,7 +559,7 @@ SELECT %s.id FROM %s
 SELECT value FROM %s
   JOIN %s ON %s.fragment_id = %s.fragment_id
   JOIN %s ON %s.graph_id = %s.id
-  WHERE object_id = ?
+  WHERE object_vid = ?
   AND object_type = ?
   AND graph_id = ?"
                                                     table-for-value-type
@@ -568,14 +569,14 @@ SELECT value FROM %s
                                                     (:graph (:config gs))
                                                     (:graph-fragments (:config gs))
                                                     (:graph (:config gs)))
-                                            object-id
+                                            (vid-of object-id)
                                             object-type
                                             id])))))
   g/Digraph
   (predecessors [g]
     (partial g/predecessors g))
   (predecessors [this node]
-    (mapv :src (jdbc/query (:con gs) [(format "
+    (mapv (comp bytes->uuid :src) (jdbc/query (:con gs) [(format "
 SELECT DISTINCT %s.src FROM %s
   JOIN %s ON %s.fragment_id = %s.id
   JOIN %s ON %s.fragment_id = %s.id
@@ -583,24 +584,26 @@ SELECT DISTINCT %s.src FROM %s
   WHERE %s.id = ?
   AND %s.dest = ?
 "
-                                              (:edge (:config gs))
-                                              (:edge (:config gs))
-                                              (:fragment (:config gs))
-                                              (:edge (:config gs))
-                                              (:fragment (:config gs))
-                                              (:graph-fragments (:config gs))
-                                              (:graph-fragments (:config gs))
-                                              (:fragment (:config gs))
-                                              (:graph (:config gs))
-                                              (:graph (:config gs))
-                                              (:graph-fragments (:config gs))
-                                              (:graph (:config gs))
-                                              (:edge (:config gs)))
-                                      id node])))
+                                                                 (:edge (:config gs))
+                                                                 (:edge (:config gs))
+                                                                 (:fragment (:config gs))
+                                                                 (:edge (:config gs))
+                                                                 (:fragment (:config gs))
+                                                                 (:graph-fragments (:config gs))
+                                                                 (:graph-fragments (:config gs))
+                                                                 (:fragment (:config gs))
+                                                                 (:graph (:config gs))
+                                                                 (:graph (:config gs))
+                                                                 (:graph-fragments (:config gs))
+                                                                 (:graph (:config gs))
+                                                                 (:edge (:config gs)))
+                                                         id (vid-of node)])))
   (in-degree [this node]
     (count (g/predecessors this node)))
   (in-edges [this node]
-    (mapv (juxt :src :dest :weight)
+    (mapv (juxt (comp bytes->uuid :src)
+                (comp bytes->uuid :dest)
+                :weight)
           (jdbc/query (:con gs) [(format "
 SELECT %s.src, %s.dest, %s.weight FROM %s
   JOIN %s ON %s.fragment_id = %s.id
@@ -624,7 +627,7 @@ SELECT %s.src, %s.dest, %s.weight FROM %s
                                          (:graph-fragments (:config gs))
                                          (:graph (:config gs))
                                          (:edge (:config gs)))
-                                 id node])))
+                                 id (vid-of node)])))
   (transpose [this]
     (assert nil))
   g/WeightedGraph
@@ -658,8 +661,8 @@ SELECT %s.weight FROM %s
                                                     (:edge (:config gs))
                                                     (:edge (:config gs)))
                                             id
-                                            n1
-                                            n2])))
+                                            (vid-of n1)
+                                            (vid-of n2)])))
         0)))
 
 (defn id-graph [gs id]
