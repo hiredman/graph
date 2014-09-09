@@ -218,28 +218,43 @@
 (defrecord G [gs id]
   g/EditableGraph
   (add-nodes* [g nodes]
-    (->G gs (reduce
-             (fn [graph node]
-               (alloc gs graph (fn [fragment-id]
-                                 (jdbc/insert! (:con gs)
-                                               (:node (:config gs))
-                                               {:fragment_id fragment-id
-                                                :vid (vid-of node)}))))
-             id
-             nodes)))
+    (jdbc/with-db-transaction [con (:con gs) :isolation :serializable :read-only? false]
+      (->G gs (reduce
+               (fn [graph nodes]
+                 (alloc (assoc gs :con con) graph
+                        (fn [fragment-id]
+                          (doseq [node nodes]
+                            (when-not (g/has-node? (id-graph gs graph) node)
+                              (jdbc/insert! con
+                                            (:node (:config gs))
+                                            {:fragment_id fragment-id
+                                             :vid (vid-of node)}))))))
+               id
+               (partition-all 10 nodes)))))
   (add-edges* [g edges]
     (->G gs (reduce
-             (fn [graph [src target weight]]
+             (fn [graph edges]
                (alloc gs graph (fn [fragment-id]
-                                 (jdbc/insert! (:con gs)
-                                               (:edge (:config gs))
-                                               {:vid (vid-of (UUID/randomUUID))
-                                                :src (vid-of src)
-                                                :fragment_id fragment-id
-                                                :dest (vid-of target)
-                                                :weight (or weight 0)}))))
+                                 (doseq [[src target weight] edges]
+                                   (when-not (g/has-node? (id-graph gs graph) src)
+                                     (jdbc/insert! (:con gs)
+                                                   (:node (:config gs))
+                                                   {:fragment_id fragment-id
+                                                    :vid (vid-of src)}))
+                                   (when-not (g/has-node? (id-graph gs graph) target)
+                                     (jdbc/insert! (:con gs)
+                                                   (:node (:config gs))
+                                                   {:fragment_id fragment-id
+                                                    :vid (vid-of target)}))
+                                   (jdbc/insert! (:con gs)
+                                                 (:edge (:config gs))
+                                                 {:vid (vid-of (UUID/randomUUID))
+                                                  :src (vid-of src)
+                                                  :fragment_id fragment-id
+                                                  :dest (vid-of target)
+                                                  :weight (or weight 0)})))))
              id
-             edges)))
+             (partition-all 10 edges))))
   (remove-edges* [g edges]
     (->G gs (reduce
              (fn [gid [src dest]]
@@ -272,6 +287,30 @@ SELECT %s.id, %s.fragment_id AS fid FROM %s
                                        gid])))
              id
              edges)))
+  (remove-nodes* [g nodes]
+    (->G gs (reduce
+             (fn [gid node]
+               (reduce
+                (fn [gid {:keys [id fid]}]
+                  (copy-without gs gid fid :node id))
+                gid
+                (jdbc/query (:con gs) [(format "
+SELECT %s.id, %s.fragment_id AS fid FROM %s
+  JOIN %s ON %s.fragment_id = %s.fragment_id
+  WHERE vid = ?
+  AND %s.graph_id = ?
+"
+                                               (:node (:config gs))
+                                               (:node (:config gs))
+                                               (:node (:config gs))
+                                               (:graph-fragments (:config gs))
+                                               (:graph-fragments (:config gs))
+                                               (:node (:config gs))
+                                               (:graph-fragments (:config gs)))
+                                       (vid-of node)
+                                       gid])))
+             id
+             nodes)))
   g/Graph
   (nodes [this]
     (mapv (comp bytes->uuid :id) (jdbc/query (:con gs) [(format "

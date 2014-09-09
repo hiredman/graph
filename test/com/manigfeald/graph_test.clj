@@ -99,4 +99,17 @@
                                  [(g/edges g) g])))
         _ (is (= (count e) 0))
         g (g/add-nodes g 1 2 3)
-        ]))
+        _ (transact gs "h"
+                    (fn [g]
+                      (let [n (vec (repeatedly 1e3 #(UUID/randomUUID)))
+                            g (apply g/add-nodes g n)
+                            g (apply g/add-edges g (map vec (partition 2 1 n)))]
+                        (doseq [[a b] (partition 2 1 n)]
+                          (is (g/has-edge? g a b)))
+                        [nil g])))
+        _ (transact gs "123"
+                    (fn [g]
+                      (let [g (g/add-nodes g 1)
+                            g (g/add-nodes g 1)]
+                        (is (= 1 (count (g/nodes g)) ))
+                        [nil g])))]))

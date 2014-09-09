@@ -7,4 +7,5 @@
                  [org.apache.derby/derby "10.10.2.0"]
                  [org.clojure/java.jdbc "0.3.5"]
                  [aysylu/loom "0.5.0"]
-                 [com.manigfeald/kvgc "0.2.0"]])
+                 [com.manigfeald/kvgc "0.2.0"]]
+  :profiles {:dev {:dependencies [[org.clojure/test.check "0.5.9"]]}})
