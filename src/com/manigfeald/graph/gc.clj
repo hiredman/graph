@@ -69,9 +69,11 @@
                       [:fragment fragment_id])
               ;; TODO: fixme for vids
               (if (= "attribute" (namespace table))
-                (for [{:keys [object_type object_id  fragment_id]}
+                (for [{:keys [object_type object_vid  fragment_id]}
                       (jdbc/query con [(format "SELECT object_type, object_vid, fragment_id FROM %s WHERE id = ?" (table config)) id])
-                      i [[(keyword object_type) object_id]
+                      :let [ot (get config (keyword object_type))]
+                      {:keys [id]} (jdbc/query con [(format "SELECT id FROM %s WHERE vid = ?" ot) object_vid])
+                      i [[(keyword object_type) id]
                          [:fragment fragment_id]]]
                   i)
                 (assert nil [table ptr])))]
@@ -83,7 +85,10 @@
                               k))])
       (assert (not (seq (for [[k v] x
                               :when (not (number? v))]
-                          true))))
+                          true)))
+              (first (for [[k v] x
+                           :when (not (number? v))]
+                       [table [k v]])))
       x))
   (tag [heap ptr tag-value]
     (let [tag-value (case tag-value

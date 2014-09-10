@@ -27,6 +27,7 @@
          (number? frag-id)
          (keyword? table)
          (number? id)]}
+  ;; (println "copy-without" prev-graph frag-id table id)
   (let [graph-id (first (vals (first (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))
         _ (reduce
            (fn [_ frag]
@@ -250,10 +251,11 @@
                                                    {:fragment_id fragment-id
                                                     :vid (vid-of src)}))
                                    (when-not (g/has-node? (id-graph gs graph) target)
-                                     (jdbc/insert! (:con gs)
-                                                   (:node (:config gs))
-                                                   {:fragment_id fragment-id
-                                                    :vid (vid-of target)}))
+                                     (when-not (= src target)
+                                       (jdbc/insert! (:con gs)
+                                                     (:node (:config gs))
+                                                     {:fragment_id fragment-id
+                                                      :vid (vid-of target)})))
                                    (jdbc/insert! (:con gs)
                                                  (:edge (:config gs))
                                                  {:vid (vid-of (UUID/randomUUID))
@@ -290,10 +292,12 @@
              id
              edges)))
   (remove-nodes* [g nodes]
+    (println "remove-nodes" nodes)
     (->G gs (reduce
              (fn [gid node]
                (reduce
-                (fn [gid [id fid]] (copy-without gs gid fid :node id))
+                (fn [gid [id fid]]
+                  (copy-without gs gid fid :node id))
                 gid
                 (let [gfs (r/t (:graph-fragments (:config gs)) :id :graph_id :fragment_id)
                       n (r/t (:node (:config gs)) :id :fragment_id :vid)]
@@ -487,28 +491,25 @@ SELECT value FROM %s
   (predecessors [g]
     (partial g/predecessors g))
   (predecessors [this node]
-    (mapv (comp bytes->uuid :src) (jdbc/query (:con gs) [(format "
-SELECT DISTINCT %s.src FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.dest = ?
-"
-                                                                 (:edge (:config gs))
-                                                                 (:edge (:config gs))
-                                                                 (:fragment (:config gs))
-                                                                 (:edge (:config gs))
-                                                                 (:fragment (:config gs))
-                                                                 (:graph-fragments (:config gs))
-                                                                 (:graph-fragments (:config gs))
-                                                                 (:fragment (:config gs))
-                                                                 (:graph (:config gs))
-                                                                 (:graph (:config gs))
-                                                                 (:graph-fragments (:config gs))
-                                                                 (:graph (:config gs))
-                                                                 (:edge (:config gs)))
-                                                         id (vid-of node)])))
+    ;; check for node existence
+    (let [gfs (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          n (r/t (:node (:config gs)) :vid :fragment_id)
+          e (r/t (:edge (:config gs)) :src :dest :fragment_id)]
+      (rest (jdbc/query (:con gs)
+                        (-> (r/⨝ (r/as n :src) (r/as e :e) (r/≡ :e/src :src/vid))
+                            (r/⨝ (r/as n :dest) (r/≡ :e/dest :dest/vid))
+                            (r/⨝ (r/as gfs :ef) (r/≡ :e/fragment_id :ef/fragment_id))
+                            (r/⨝ (r/as gfs :sf) (r/≡ :src/fragment_id :sf/fragment_id))
+                            (r/⨝ (r/as gfs :df) (r/≡ :dest/fragment_id :df/fragment_id))
+                            (r/σ #{(r/≡ :ef/graph_id (r/lit id))
+                                   (r/≡ :sf/graph_id (r/lit id))
+                                   (r/≡ :df/graph_id (r/lit id))
+                                   (r/≡ :dest/vid (r/lit (vid-of node)))})
+                            (r/π :e/src)
+                            (r/to-sql))
+                        :as-arrays? true
+                        :row-fn (fn [[id]]
+                                  (bytes->uuid id))))))
   (in-degree [this node]
     (count (g/predecessors this node)))
   (in-edges [this node]
