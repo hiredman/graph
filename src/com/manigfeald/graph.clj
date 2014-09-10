@@ -5,7 +5,8 @@
             [com.manigfeald.graph.readonly :as ro]
             [com.manigfeald.kvgc :as k]
             [com.manigfeald.graph.gc :as gc]
-            [com.manigfeald.graph.alloc :refer [alloc]])
+            [com.manigfeald.graph.alloc :refer [alloc]]
+            [com.manigfeald.graph.rel :as r])
   (:import (java.util.concurrent.locks ReentrantReadWriteLock)
            (java.nio ByteBuffer)
            (java.lang.ref WeakReference)
@@ -265,202 +266,109 @@
                            (instance? UUID src))
                        dest)
                (reduce
-                (fn [gid {:keys [id fid]}]
+                (fn [gid [id fid]]
                   (copy-without gs gid fid :edge id))
                 gid
-                (jdbc/query (:con gs) [(format "
-SELECT %s.id, %s.fragment_id AS fid FROM %s
-  JOIN %s ON %s.fragment_id = %s.fragment_id
-  WHERE src = ?
-  AND dest = ?
-  AND %s.graph_id = ?
-"
-                                               (:edge (:config gs))
-                                               (:edge (:config gs))
-                                               (:edge (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:edge (:config gs))
-                                               (:graph-fragments (:config gs)))
-                                       (vid-of src)
-                                       (vid-of dest)
-                                       gid])))
+                (let [gfs (r/t (:graph-fragments (:config gs)) :id :graph_id :fragment_id)
+                      e (r/t (:edge (:config gs)) :id :fragment_id :src :dest)]
+                  ;; :as-arrays? returns a column header, bonkers
+                  (rest (jdbc/query (:con gs)
+                                    (-> (r/⨝ (r/as e :e) (r/as gfs :gfs) (r/≡ :e/fragment_id :gfs/fragment_id))
+                                        (r/σ #{(r/≡ :e/src (r/lit (vid-of src)))
+                                               (r/≡ :e/dest (r/lit (vid-of dest)))
+                                               (r/≡ :gfs/graph_id (r/lit gid))})
+                                        (r/π :e/id :e/fragment_id)
+                                        (r/to-sql))
+                                    :as-arrays? true)))))
              id
              edges)))
   (remove-nodes* [g nodes]
     (->G gs (reduce
              (fn [gid node]
                (reduce
-                (fn [gid {:keys [id fid]}]
-                  (copy-without gs gid fid :node id))
+                (fn [gid [id fid]] (copy-without gs gid fid :node id))
                 gid
-                (jdbc/query (:con gs) [(format "
-SELECT %s.id, %s.fragment_id AS fid FROM %s
-  JOIN %s ON %s.fragment_id = %s.fragment_id
-  WHERE vid = ?
-  AND %s.graph_id = ?
-"
-                                               (:node (:config gs))
-                                               (:node (:config gs))
-                                               (:node (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:graph-fragments (:config gs))
-                                               (:node (:config gs))
-                                               (:graph-fragments (:config gs)))
-                                       (vid-of node)
-                                       gid])))
+                (let [gfs (r/t (:graph-fragments (:config gs)) :id :graph_id :fragment_id)
+                      n (r/t (:node (:config gs)) :id :fragment_id :vid)]
+                  ;; :as-arrays? returns a column header, bonkers
+                  (rest (jdbc/query (:con gs)
+                                    (-> (r/⨝ (r/as n :n) (r/as gfs :gfs) (r/≡ :n/fragment_id :gfs/fragment_id))
+                                        (r/σ (r/∧ (r/≡ :n/vid (r/lit (vid-of node)))
+                                                  (r/≡ :gfs/graph_id (r/lit gid))))
+                                        (r/π :n/id :n/fragment_id)
+                                        (r/to-sql))
+                                    :as-arrays? true)))))
              id
              nodes)))
   g/Graph
   (nodes [this]
-    (mapv (comp bytes->uuid :id) (jdbc/query (:con gs) [(format "
-SELECT %s.vid AS id FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-"
-                                                                (:node (:config gs))
-                                                                (:node (:config gs))
-                                                                (:fragment (:config gs))
-                                                                (:node (:config gs))
-                                                                (:fragment (:config gs))
-                                                                (:graph-fragments (:config gs))
-                                                                (:graph-fragments (:config gs))
-                                                                (:fragment (:config gs))
-                                                                (:graph (:config gs))
-                                                                (:graph (:config gs))
-                                                                (:graph-fragments (:config gs))
-                                                                (:graph (:config gs)))
-                                                        id])))
+    (let [gfs (r/t (:graph-fragments (:config gs)) :id :graph_id :fragment_id)
+          n (r/t (:node (:config gs)) :id :fragment_id :vid)]
+      (rest (jdbc/query (:con gs)
+                        (-> (r/⨝ (r/as n :n) (r/as gfs :gfs) (r/≡ :n/fragment_id :gfs/fragment_id))
+                            (r/σ (r/≡ :gfs/graph_id (r/lit id)))
+                            (r/π :n/vid)
+                            (r/to-sql))
+                        :as-arrays? true
+                        :row-fn (comp bytes->uuid first)))))
   (edges [this]
     (assert (number? id))
-    (mapv (juxt (comp bytes->uuid :src)
-                (comp bytes->uuid :dest)
-                :weight)
-          (jdbc/query (:con gs) [(format "
-SELECT src,dest,weight FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-"
-                                         (:edge (:config gs))
-                                         (:fragment (:config gs))
-                                         (:edge (:config gs))
-                                         (:fragment (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:fragment (:config gs))
-                                         (:graph (:config gs))
-                                         (:graph (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:graph (:config gs)))
-                                 id])))
+    (let [gf (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          e (r/t (:edge (:config gs)) :src :dest :weight :fragment_id)]
+      (rest (jdbc/query (:con gs)
+                        (-> (r/⨝ (r/as e :e) (r/as gf :gf) (r/≡ :e/fragment_id :gf/fragment_id))
+                            (r/σ (r/≡ :gf/graph_id (r/lit id)))
+                            (r/π :e/src :e/dest :e/weight)
+                            (r/to-sql))
+                        :as-arrays? true
+                        :row-fn (fn [[src dest weight]]
+                                  [(bytes->uuid src) (bytes->uuid dest) weight])))))
   (has-node? [this node]
-    (boolean (seq (jdbc/query (:con gs) [(format "
-SELECT %s.id AS id FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.vid = ?
-"
-                                                 (:node (:config gs))
-                                                 (:node (:config gs))
-                                                 (:fragment (:config gs))
-                                                 (:node (:config gs))
-                                                 (:fragment (:config gs))
-                                                 (:graph-fragments (:config gs))
-                                                 (:graph-fragments (:config gs))
-                                                 (:fragment (:config gs))
-                                                 (:graph (:config gs))
-                                                 (:graph (:config gs))
-                                                 (:graph-fragments (:config gs))
-                                                 (:graph (:config gs))
-                                                 (:node (:config gs)))
-                                         id (vid-of node)]))))
+    (let [gfs (r/t (:graph-fragments (:config gs)) :id :graph_id :fragment_id)
+          n (r/t (:node (:config gs)) :id :fragment_id :vid)]
+      (boolean (seq (jdbc/query (:con gs)
+                                (-> (r/⨝ (r/as n :n) (r/as gfs :gfs) (r/≡ :n/fragment_id :gfs/fragment_id))
+                                    (r/σ #{(r/≡ :gfs/graph_id (r/lit id))
+                                           (r/≡ :n/vid (r/lit (vid-of node)))})
+                                    (r/π :n/vid)
+                                    (r/to-sql)))))))
   (has-edge? [this src dest]
-    (boolean (seq (jdbc/query (:con gs) [(format "
-SELECT %s.id AS id FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.src = ?
-  AND %s.dest = ?
-"
-                                                 (:edge (:config gs))
-                                                 (:edge (:config gs))
-                                                 (:fragment (:config gs))
-                                                 (:edge (:config gs))
-                                                 (:fragment (:config gs))
-                                                 (:graph-fragments (:config gs))
-                                                 (:graph-fragments (:config gs))
-                                                 (:fragment (:config gs))
-                                                 (:graph (:config gs))
-                                                 (:graph (:config gs))
-                                                 (:graph-fragments (:config gs))
-                                                 (:graph (:config gs))
-                                                 (:edge (:config gs))
-                                                 (:edge (:config gs)))
-                                         id (vid-of src) (vid-of dest)]))))
-  ;; TODO:
+    (let [gf (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          e (r/t (:edge (:config gs)) :id :src :dest :weight :fragment_id)]
+      (boolean (seq (jdbc/query (:con gs)
+                                (-> (r/⨝ (r/as e :e) (r/as gf :gf) (r/≡ :e/fragment_id :gf/fragment_id))
+                                    (r/σ #{(r/≡ :gf/graph_id (r/lit id))
+                                           (r/≡ :e/src (r/lit (vid-of src)))
+                                           (r/≡ :e/dest (r/lit (vid-of dest)))})
+                                    (r/π :e/id)
+                                    (r/to-sql)))))))
   (successors [g]
     (partial g/successors g))
   (successors [this node]
-    (mapv (comp bytes->uuid :dest) (jdbc/query (:con gs) [(format "
-SELECT DISTINCT %s.dest FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.src = ?
-"
-                                                                  (:edge (:config gs))
-                                                                  (:edge (:config gs))
-                                                                  (:fragment (:config gs))
-                                                                  (:edge (:config gs))
-                                                                  (:fragment (:config gs))
-                                                                  (:graph-fragments (:config gs))
-                                                                  (:graph-fragments (:config gs))
-                                                                  (:fragment (:config gs))
-                                                                  (:graph (:config gs))
-                                                                  (:graph (:config gs))
-                                                                  (:graph-fragments (:config gs))
-                                                                  (:graph (:config gs))
-                                                                  (:edge (:config gs)))
-                                                          id (vid-of node)])))
+    (let [gf (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          e (r/t (:edge (:config gs)) :id :src :dest :weight :fragment_id)]
+      (rest (jdbc/query (:con gs)
+                        (-> (r/⨝ (r/as e :e) (r/as gf :gf) (r/≡ :e/fragment_id :gf/fragment_id))
+                            (r/σ #{(r/≡ :gf/graph_id (r/lit id))
+                                   (r/≡ :e/src (r/lit (vid-of node)))})
+                            (r/π :e/dest)
+                            (r/to-sql))
+                        :as-arrays? true
+                        :row-fn (fn [[dest]] (bytes->uuid dest))))))
   (out-degree [this node]
     (count (g/successors this node)))
   (out-edges [this node]
-    (mapv (juxt (comp bytes->uuid :src)
-                (comp bytes->uuid :dest)
-                :weight)
-          (jdbc/query (:con gs) [(format "
-SELECT %s.src, %s.dest, %s.weight FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.src = ?
-"
-                                         (:edge (:config gs))
-                                         (:edge (:config gs))
-                                         (:edge (:config gs))
-                                         (:edge (:config gs))
-                                         (:fragment (:config gs))
-                                         (:edge (:config gs))
-                                         (:fragment (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:fragment (:config gs))
-                                         (:graph (:config gs))
-                                         (:graph (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:graph (:config gs))
-                                         (:edge (:config gs)))
-                                 id (vid-of node)])))
+    (let [gf (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          e (r/t (:edge (:config gs)) :id :src :dest :weight :fragment_id)]
+      (rest (jdbc/query (:con gs)
+                        (-> (r/⨝ (r/as e :e) (r/as gf :gf) (r/≡ :e/fragment_id :gf/fragment_id))
+                            (r/σ #{(r/≡ :gf/graph_id (r/lit id))
+                                   (r/≡ :e/src (r/lit (vid-of node)))})
+                            (r/π :e/src :e/dest :e/weight)
+                            (r/to-sql))
+                        :as-arrays? true
+                        :row-fn (fn [[src dest weight]]
+                                  [(bytes->uuid src) (bytes->uuid dest) weight])))))
   a/AttrGraph
   (add-attr [g node-or-edge k v]
     (assert (keyword? k))
@@ -630,34 +538,16 @@ SELECT %s.src, %s.dest, %s.weight FROM %s
   (weight [this edge]
     (g/weight this (g/src edge) (g/dest edge)))
   (weight [g n1 n2]
-    (or (first (mapv :weight
-                     (jdbc/query (:con gs) [(format "
-SELECT %s.weight FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.src = ?
-  AND %s.dest = ?
-"
-                                                    (:edge (:config gs))
-                                                    (:edge (:config gs))
-                                                    (:fragment (:config gs))
-                                                    (:edge (:config gs))
-                                                    (:fragment (:config gs))
-                                                    (:graph-fragments (:config gs))
-                                                    (:graph-fragments (:config gs))
-                                                    (:fragment (:config gs))
-                                                    (:graph (:config gs))
-                                                    (:graph (:config gs))
-                                                    (:graph-fragments (:config gs))
-                                                    (:graph (:config gs))
-                                                    (:edge (:config gs))
-                                                    (:edge (:config gs)))
-                                            id
-                                            (vid-of n1)
-                                            (vid-of n2)])))
-        0)))
+    (let [e (r/t (:edge (:config gs)) :vid :src :dest :id :weight :fragment_id)
+          gf (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          s (-> (r/⨝ (r/as e :e) (r/as gf :gf) (r/≡ :e/fragment_id :gf/fragment_id))
+                (r/σ #{(r/≡ :e/src (r/lit (vid-of n1)))
+                       (r/≡ :e/dest (r/lit (vid-of n2)))
+                       (r/≡ :gf/graph_id (r/lit id))})
+                (r/π :e/weight)
+                (r/to-sql))
+          r (or (first (map :weight (jdbc/query (:con gs) s))) 0)]
+      r)))
 
 (defn id-graph [gs id]
   (->G gs id))

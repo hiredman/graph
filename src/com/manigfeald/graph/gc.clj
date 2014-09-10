@@ -30,6 +30,8 @@
               (assert nil [k v])))]
     [i nil]))
 
+;; TODO: simplify the reference "graph" presented to the garbage
+;; collector
 (defrecord Heap [con config mark-state]
   k/Heap
   (references [heap ptr]
