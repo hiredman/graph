@@ -1,4 +1,5 @@
-(ns com.manigfeald.graph.rel)
+(ns com.manigfeald.graph.rel
+  (:require [clojure.set :as set]))
 
 (defprotocol SQLAble
   (-to-sql [_])
@@ -93,7 +94,16 @@
           [s2 v2] (-to-sql b)
           [s3 v3] (-to-sql condition)
           known-cols (into (set (columns a)) (columns b))]
-      (assert (every? known-cols (columns condition)))
+      (when-not (every? known-cols (columns condition))
+        (throw (ex-info
+                (print-str "unknown column in join"
+                           (first (set/difference (set (columns condition)) known-cols)))
+                {:type :join
+                 :condition condition
+                 :table-a a
+                 :table-b b
+                 :known-columns known-cols
+                 :unknown-columns (set/difference (set (columns condition)) known-cols)})))
       [(str s " JOIN " s2 " ON " s3)
        (into (into v v2) v3)]))
   (columns [_]
@@ -106,7 +116,8 @@
   (-to-sql [_]
     (let [[s v] (-to-sql a)
           known-cols (set (columns a))]
-      (assert (every? known-cols scolumns))
+      (assert (every? known-cols scolumns)
+              [known-cols scolumns])
       [(str "SELECT " (apply str (interpose "," (map first (map -to-sql scolumns))))
             " FROM "
             s)

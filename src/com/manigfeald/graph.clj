@@ -292,7 +292,7 @@
              id
              edges)))
   (remove-nodes* [g nodes]
-    (println "remove-nodes" nodes)
+    ;; (println "remove-nodes" nodes)
     (->G gs (reduce
              (fn [gid node]
                (reduce
