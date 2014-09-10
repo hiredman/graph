@@ -206,8 +206,8 @@
         (.putLong bb (.getMostSignificantBits ^UUID data))
         (.putLong bb (.getLeastSignificantBits ^UUID data)))
       (do
-        (.putLong bb (long data))
-        (.putLong bb 0)))
+        (.putLong bb 0)
+        (.putLong bb (long data))))
     b))
 
 (defn bytes->uuid [bytes]
