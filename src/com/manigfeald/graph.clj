@@ -363,16 +363,24 @@
   (successors [g]
     (partial g/successors g))
   (successors [this node]
-    (let [gf (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
-          e (r/t (:edge (:config gs)) :id :src :dest :weight :fragment_id)]
+    (let [gfs (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+          n (r/t (:node (:config gs)) :vid :fragment_id)
+          e (r/t (:edge (:config gs)) :src :dest :fragment_id)]
       (rest (jdbc/query (:con gs)
-                        (-> (r/⨝ (r/as e :e) (r/as gf :gf) (r/≡ :e/fragment_id :gf/fragment_id))
-                            (r/σ #{(r/≡ :gf/graph_id (r/lit id))
-                                   (r/≡ :e/src (r/lit (vid-of node)))})
+                        (-> (r/⨝ (r/as n :src) (r/as e :e) (r/≡ :e/src :src/vid))
+                            (r/⨝ (r/as n :dest) (r/≡ :e/dest :dest/vid))
+                            (r/⨝ (r/as gfs :ef) (r/≡ :e/fragment_id :ef/fragment_id))
+                            (r/⨝ (r/as gfs :sf) (r/≡ :src/fragment_id :sf/fragment_id))
+                            (r/⨝ (r/as gfs :df) (r/≡ :dest/fragment_id :df/fragment_id))
+                            (r/σ #{(r/≡ :ef/graph_id (r/lit id))
+                                   (r/≡ :sf/graph_id (r/lit id))
+                                   (r/≡ :df/graph_id (r/lit id))
+                                   (r/≡ :src/vid (r/lit (vid-of node)))})
                             (r/π :e/dest)
                             (r/to-sql))
                         :as-arrays? true
-                        :row-fn (fn [[dest]] (bytes->uuid dest))))))
+                        :row-fn (fn [[id]]
+                                  (bytes->uuid id))))))
   (out-degree [this node]
     (count (g/successors this node)))
   (out-edges [this node]
