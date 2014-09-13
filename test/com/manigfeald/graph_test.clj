@@ -112,4 +112,54 @@
                       (let [g (g/add-nodes g 1)
                             g (g/add-nodes g 1)]
                         (is (= 1 (count (g/nodes g)) ))
-                        [nil g])))]))
+                        [nil g])))
+        ]))
+
+(deftest t-one
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        g (g/add-edges g [1 0 0])
+        g (g/remove-nodes g 0)]
+    (is (= #{(bytes->uuid (vid-of 1))}
+           (set (g/nodes g))))))
+
+(deftest t-predecessors
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        a (bytes->uuid (vid-of 0))
+        g (id-graph gs gid)
+        g (g/add-edges g [a a 0])
+        g (g/remove-nodes g a)]
+    (is (empty? (set (g/predecessors g a))))))
+
+(deftest t-edges
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        a (bytes->uuid (vid-of 0))
+        g (id-graph gs gid)
+        g (g/add-edges g [a a 0])
+        g (g/remove-nodes g a)]
+    (is (empty? (set (g/edges g))))))
+
+(deftest t-successors
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        a (bytes->uuid (vid-of 2))
+        b (bytes->uuid (vid-of 6))
+        g (id-graph gs gid)
+        g (g/add-edges g [a b 0])
+        g (g/remove-nodes g b)]
+    (is (empty? (set (g/successors g a))))))
