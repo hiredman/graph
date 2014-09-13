@@ -35,58 +35,70 @@
   (= (set a) (set b)))
 
 (def graph-ops
-  (gen/one-of [(gen/tuple (gen/return [:g/nodes :view-coll]))
-               (gen/tuple (gen/return [:g/edges :view-edges-coll]))
-               (gen/tuple (gen/return [:g/has-node? :view]) node)
-               (gen/tuple (gen/return [:g/has-edge? :view]) node node)
-               (gen/tuple (gen/return [:g/successors :view-coll]) node)
-               (gen/tuple (gen/return [:g/predecessors :view-coll]) node)
-               (gen/tuple (gen/return [:g/out-degree :view]) node)
-               (gen/tuple (gen/return [:g/in-degree :view]) node)
-               (gen/tuple (gen/return [:g/add-nodes :update]) node)
-               (gen/tuple (gen/return [:g/add-edges :update]) (gen/tuple node node gen/pos-int))
-               (gen/tuple (gen/return [:g/weight :nil-or-zero]) node node)
-               (gen/tuple (gen/return [:g/remove-nodes :update]) node)
-               (gen/tuple (gen/return [:g/remove-edges :update]) (gen/tuple node node gen/pos-int))]))
+  (gen/one-of
+   [(gen/tuple (gen/return [:g/nodes :view-coll]))
+    (gen/tuple (gen/return [:g/edges :view-edges-coll]))
+    (gen/tuple (gen/return [:g/has-node? :view]) node)
+    (gen/tuple (gen/return [:g/has-edge? :view]) node node)
+    (gen/tuple (gen/return [:g/successors :view-coll]) node)
+    (gen/tuple (gen/return [:g/predecessors :view-coll]) node)
+    (gen/tuple (gen/return [:g/out-degree :view]) node)
+    (gen/tuple (gen/return [:g/in-degree :view]) node)
+    (gen/tuple (gen/return [:g/add-nodes :update]) node)
+    (gen/tuple (gen/return [:g/add-edges :update])
+               (gen/tuple node node gen/pos-int))
+    (gen/tuple (gen/return [:g/weight :nil-or-zero]) node node)
+    (gen/tuple (gen/return [:g/remove-nodes :update]) node)
+    (gen/tuple (gen/return [:g/remove-edges :update])
+               (gen/tuple node node gen/pos-int))]))
 
 (def graph-program
   (gen/vector graph-ops))
 
+(defn step-program
+  [{:keys [loom graph result]} [idx [[fun fun-type] & args :as code]]]
+  (try
+    (let [fun @(ns-resolve 'com.manigfeald.check
+                           (symbol (name (namespace fun))
+                                   (name fun)))
+          loom' (apply fun loom args)
+          graph' (apply fun graph args)
+          [loom graph] (if (= fun-type :update)
+                         [loom' graph']
+                         [loom graph])
+          r (case fun-type
+              :nil-or-zero (= (or loom' 0)
+                              (or graph' 0))
+              :update true
+              :view (= loom' graph')
+              :view-coll (set-equal loom' graph')
+              :view-edges-coll
+              (set-equal (map (juxt g/src g/dest) loom')
+                         (map (juxt g/src g/dest) graph')))]
+      (assert r [idx code loom' graph'])
+      {:loom loom
+       :graph graph
+       :result (and result r)})
+    (catch Exception e
+      (throw (Exception. (print-str idx code) e)))))
+
+(defn run-program [lg g program]
+  (:result
+   (reduce
+    step-program
+    {:loom lg
+     :graph g
+     :result true}
+    (map-indexed vector program))))
+
 (defspec regular-graph
   500
-  (prop/for-all [program graph-program]
-                (let [gs (t-gs)
-                      _ (try
-                          (create-tables! gs)
-                          (catch Exception _))
-                      gid (allocate-graph gs)
-                      g (id-graph gs gid)]
-                  (:result (reduce
-                            (fn [{:keys [loom graph result]} [idx [[fun fun-type] & args :as code]]]
-                              (try
-                                (let [fun @(ns-resolve 'com.manigfeald.check
-                                                       (symbol (name (namespace fun))
-                                                               (name fun)))
-                                      loom' (apply fun loom args)
-                                      graph' (apply fun graph args)
-                                      [loom graph] (if (= fun-type :update)
-                                                     [loom' graph']
-                                                     [loom graph])
-                                      r (case fun-type
-                                          :nil-or-zero (= (or loom' 0)
-                                                          (or graph' 0))
-                                          :update true
-                                          :view (= loom' graph')
-                                          :view-coll (set-equal loom' graph')
-                                          :view-edges-coll (set-equal (map (juxt g/src g/dest) loom')
-                                                                      (map (juxt g/src g/dest) graph')))]
-                                  (assert r [idx code loom' graph'])
-                                  {:loom loom
-                                   :graph graph
-                                   :result (and result r)})
-                                (catch Exception e
-                                  (throw (Exception. (print-str idx code) e)))))
-                            {:loom (g/weighted-digraph)
-                             :graph g
-                             :result true}
-                            (map-indexed vector program))))))
+  (prop/for-all
+   [program graph-program]
+   (let [gs (t-gs)
+         _ (try
+             (create-tables! gs)
+             (catch Exception _))
+         gid (allocate-graph gs)
+         g (id-graph gs gid)]
+     (run-program (g/weighted-digraph) g program))))

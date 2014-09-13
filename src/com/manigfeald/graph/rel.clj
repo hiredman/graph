@@ -43,9 +43,6 @@
 (defn equals [a b]
   (binary-operator "=" a b))
 
-;; (defn ≍ [a b]
-;;   (equals a b))
-
 (defn ≡ [a b]
   (equals a b))
 
@@ -96,14 +93,16 @@
           known-cols (into (set (columns a)) (columns b))]
       (when-not (every? known-cols (columns condition))
         (throw (ex-info
-                (print-str "unknown column in join"
-                           (first (set/difference (set (columns condition)) known-cols)))
+                (print-str
+                 "unknown column in join"
+                 (first (set/difference (set (columns condition)) known-cols)))
                 {:type :join
                  :condition condition
                  :table-a a
                  :table-b b
                  :known-columns known-cols
-                 :unknown-columns (set/difference (set (columns condition)) known-cols)})))
+                 :unknown-columns
+                 (set/difference (set (columns condition)) known-cols)})))
       [(str s " JOIN " s2 " ON " s3)
        (into (into v v2) v3)]))
   (columns [_]
@@ -116,25 +115,74 @@
   (-to-sql [_]
     (let [[s v] (-to-sql a)
           known-cols (set (columns a))]
-      (assert (every? known-cols scolumns)
-              [known-cols scolumns])
-      [(str "SELECT " (apply str (interpose "," (map first (map -to-sql scolumns))))
+      (when-not (every? known-cols scolumns)
+        (throw (ex-info
+                (print-str "unknown column in project"
+                           (first (set/difference (set scolumns) known-cols)))
+                {:type :project
+                 :known-columns known-cols
+                 :unknown-columns (set/difference (set scolumns) known-cols)})))
+      [(str "SELECT " (->> (map -to-sql scolumns)
+                           (map first)
+                           (interpose ",")
+                           (apply str))
             " FROM "
             s)
        v]))
   (columns [_]
-    scolumns))
+    (columns a)))
 
 (defrecord Select [a condition]
   SQLAble
   (-to-sql [_]
     (let [[s v] (-to-sql a)
           known-cols (set (columns a))
-          _ (assert (every? known-cols (columns condition)))
+          _ (when-not (every? known-cols (columns condition))
+              (throw (ex-info
+                      (print-str
+                       "unknown column in select"
+                       (first (set/difference (set (columns condition))
+                                              known-cols)))
+                      {:type :select
+                       :condition condition
+                       :known-columns known-cols
+                       :unknown-columns
+                       (set/difference (set (columns condition)) known-cols)})))
           [s1 v1] (-to-sql condition)]
       [(str s
             " WHERE "
             s1)
+       (into v v1)]))
+  (columns [_]
+    (columns a)))
+
+(defrecord Order [a the-columns direction]
+  SQLAble
+  (-to-sql [_]
+    (let [[s v] (-to-sql a)
+          known-cols (set (columns a))
+          _ (when-not (every? known-cols the-columns)
+              (throw (ex-info
+                      (print-str
+                       "unknown column in order"
+                       (first (set/difference (set the-columns) known-cols)))
+                      {:type :order
+                       :known-columns known-cols
+                       :unknown-columns
+                       (set/difference (set the-columns) known-cols)})))
+          [s1 v1] (reduce
+                   (fn [[a b] [c d]]
+                     [(conj a c)
+                      (into b d)])
+                   [[] []]
+                   (for [a the-columns]
+                     (-to-sql a)))
+          s1 (apply str (interpose ", " s1))]
+      [(str s
+            " ORDER BY "
+            s1
+            " "
+            direction)
        (into v v1)]))
   (columns [_]
     (columns a)))
@@ -169,6 +217,18 @@
 
 (defn as [table new-name]
   (->As table new-name))
+
+(defn order-by-descending [t & c]
+  (->Order t c "DESC"))
+
+(defn ↓ [t & c]
+  (->Order t c "DESC"))
+
+(defn order-by-ascending [t & c]
+  (->Order t c "ASC"))
+
+(defn ↑ [t & c]
+  (->Order t c "ASC"))
 
 (def max-buffer 10)
 

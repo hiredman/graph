@@ -49,6 +49,8 @@
           _ (assert table)
           _ (assert id)
           x (case table
+              ;; TODO: fragments should not reference attributes,
+              ;; nodes and edges should reference their attributes
               :named-graph (rest (jdbc/query con (r/to-sql (r/π ng :ng/graph_id))
                                              :as-arrays? true
                                              :row-fn (fn [[id]] [:graph id])))
@@ -56,20 +58,32 @@
                                        :as-arrays? true
                                        :row-fn (fn [[id]] [:graph-fragments id])))
               :fragment (for [[k v] config
-                              :when (not (contains? #{:named-graph :graph :fragment :graph-fragments} k))
-                              item (rest (jdbc/query con
-                                                     (-> (r/as (r/t (k config) :fragment_id :id) :t)
-                                                         (r/σ (r/≡ :t/fragment_id (r/lit id)))
-                                                         (r/π :t/id)
-                                                         (r/to-sql))
-                                                     :as-arrays? true
-                                                     :row-fn (fn [[id]] [k id])))]
+                              :when (not
+                                     (contains?
+                                      #{:named-graph :graph
+                                        :fragment :graph-fragments}
+                                      k))
+                              item (rest
+                                    (jdbc/query
+                                     con
+                                     (-> (r/as (r/t (k config) :fragment_id :id)
+                                               :t)
+                                         (r/σ (r/≡ :t/fragment_id
+                                                   (r/lit id)))
+                                         (r/π :t/id)
+                                         (r/to-sql))
+                                     :as-arrays? true
+                                     :row-fn (fn [[id]] [k id])))]
                           item)
-              :graph-fragments (->> (jdbc/query con (r/to-sql (r/π gfs :gfs/graph_id :gfs/fragment_id))
-                                                :as-arrays? true
-                                                :row-fn (fn [[graph-id fragment-id]]
-                                                          [[:graph graph-id]
-                                                           [:fragment fragment-id]]))
+              :graph-fragments (->> (jdbc/query
+                                     con
+                                     (r/to-sql (r/π gfs
+                                                    :gfs/graph_id
+                                                    :gfs/fragment_id))
+                                     :as-arrays? true
+                                     :row-fn (fn [[graph-id fragment-id]]
+                                               [[:graph graph-id]
+                                                [:fragment fragment-id]]))
                                     (rest)
                                     (apply concat))
               [])]
@@ -87,10 +101,10 @@
                        [table [k v]])))
       x))
   (tag [heap ptr tag-value]
-    (.put tags ptr tag-value)
+    (.put ^HashMap tags ptr tag-value)
     heap)
   (tag-value [heap ptr]
-    (.get tags ptr))
+    (.get ^HashMap tags ptr))
   (free [heap ptr]
     (let [[table id] ptr
           fq (update-in free-queue [table] (fnil conj #{}) id)

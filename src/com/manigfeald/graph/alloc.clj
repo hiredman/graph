@@ -1,7 +1,7 @@
 (ns com.manigfeald.graph.alloc
   (:require [clojure.java.jdbc :as jdbc]))
 
-(def max-frag-size 10)
+(def max-frag-size 5)
 
 (defn clone-frag [gs frag-id]
   (let [[{:keys [size]}]
@@ -27,10 +27,15 @@
         (jdbc/insert! (:con gs) (:graph-fragments (:config gs)) (dissoc (assoc frag :graph_id graph-id) :id :tag))
         id))))
 
+(defn frag-stats [gs]
+  (first (jdbc/query (:con gs)
+                     [(format "SELECT (SUM(size) / COUNT(size)) AS avgn, COUNT(size) AS countn, MAX(size) AS maxn, MIN(size) AS minn FROM %s" (:fragment (:config gs)))])))
+
 (defn alloc
   ([gs prev-graph]
      (alloc gs prev-graph (constantly nil)))
   ([gs prev-graph fun]
+    ;; (prn (frag-stats gs))
      (let [graph-id (new-graph gs)
            chosen-frag (first (jdbc/query (:con gs)
                                           [(format "
