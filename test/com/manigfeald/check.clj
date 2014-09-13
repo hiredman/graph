@@ -34,23 +34,26 @@
 (defn set-equal [a b]
   (= (set a) (set b)))
 
-
 (def graph-ops
   (gen/one-of [(gen/tuple (gen/return [:g/nodes :view-coll]))
                (gen/tuple (gen/return [:g/edges :view-edges-coll]))
                (gen/tuple (gen/return [:g/has-node? :view]) node)
                (gen/tuple (gen/return [:g/has-edge? :view]) node node)
                (gen/tuple (gen/return [:g/successors :view-coll]) node)
+               (gen/tuple (gen/return [:g/predecessors :view-coll]) node)
                (gen/tuple (gen/return [:g/out-degree :view]) node)
+               (gen/tuple (gen/return [:g/in-degree :view]) node)
                (gen/tuple (gen/return [:g/add-nodes :update]) node)
-               (gen/tuple (gen/return [:g/add-edges :update]) (gen/tuple node node gen/pos-int))]))
+               (gen/tuple (gen/return [:g/add-edges :update]) (gen/tuple node node gen/pos-int))
+               (gen/tuple (gen/return [:g/weight :nil-or-zero]) node node)
+               (gen/tuple (gen/return [:g/remove-nodes :update]) node)
+               (gen/tuple (gen/return [:g/remove-edges :update]) (gen/tuple node node gen/pos-int))]))
 
 (def graph-program
   (gen/vector graph-ops))
 
-
 (defspec regular-graph
-  1000
+  500
   (prop/for-all [program graph-program]
                 (let [gs (t-gs)
                       _ (try
@@ -70,6 +73,8 @@
                                                      [loom' graph']
                                                      [loom graph])
                                       r (case fun-type
+                                          :nil-or-zero (= (or loom' 0)
+                                                          (or graph' 0))
                                           :update true
                                           :view (= loom' graph')
                                           :view-coll (set-equal loom' graph')
