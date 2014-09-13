@@ -7,12 +7,15 @@
             [com.manigfeald.graph.gc :as gc]
             [com.manigfeald.graph.alloc :refer [alloc]]
             [com.manigfeald.graph.rel :as r])
-  (:import (java.util.concurrent.locks ReentrantReadWriteLock)
+  (:import (java.util.concurrent.locks ReentrantReadWriteLock
+                                       ReentrantLock)
            (java.nio ByteBuffer)
            (java.lang.ref WeakReference)
            (java.util UUID)))
 
-(defrecord GraphStore [con config rw gc-running? views references heap])
+;; TODO: use a reference queue
+
+(defrecord GraphStore [con config rw gc-running? views references heap locks])
 
 (defn gs [con config]
   (->GraphStore con config
@@ -20,14 +23,14 @@
                 (atom false)
                 (atom #{})
                 (atom {})
-                (gc/->Heap con config (atom false))))
+                (gc/->Heap con config (atom false))
+                (atom {})))
 
 (defn copy-without [gs prev-graph frag-id table id]
   {:pre [(number? prev-graph)
          (number? frag-id)
          (keyword? table)
          (number? id)]}
-  ;; (println "copy-without" prev-graph frag-id table id)
   (let [graph-id (first (vals (first (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))
         _ (reduce
            (fn [_ frag]
@@ -147,14 +150,22 @@
     (loop [i 0]
       (when (= i 100)
         (assert nil))
-      (let [g (or (first (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE name = ?" (:named-graph (:config gs)))
-                                                graph-name]))
+      (let [g (or (first (jdbc/query (:con gs)
+                                     [(format "SELECT * FROM %s WHERE name = ?" (:named-graph (:config gs)))
+                                      graph-name]))
                   {:graph_id (alloc gs -1)})
-            ro (ro/->ROG (id-graph gs (biginteger (:graph_id g)))
-                         (fn [_] (swap! (:views gs) disj (:graph_id g))))]
-        (swap! (:views gs) conj (:graph_id g))
+            ro (ro/->ROG (id-graph gs (biginteger (:graph_id g))) (fn [_] (swap! (:views gs) disj (:graph_id g))))]
         (swap! (:references gs) (fn [m k v] (if (contains? m k) m (assoc m k v))) (:graph_id g) (WeakReference. ro))
+        (swap! (:views gs) conj (:graph_id g))
         ro))))
+
+(defmacro java-locking [lock & body]
+  `(let [lock# ~lock]
+     (try
+       (.lock lock#)
+       ~@body
+       (finally
+         (.unlock lock#)))))
 
 (defn transact [gs graph-name fun]
   (try
@@ -170,33 +181,41 @@
                     {:graph_id (alloc gs -1)
                      :new? true})
               [ret ng] (fun (id-graph gs (biginteger (:graph_id g))))]
+          (swap! (:locks gs) (fn [locks]
+                               (if (contains? locks graph-name)
+                                 locks
+                                 (assoc locks graph-name (ReentrantLock.)))))
           (assert ng)
-          ;; TODO: per graph lock here
-          (if-not (locking gs
-                    (let [cg (or (first (jdbc/query
-                                         (:con gs)
-                                         (-> (r/as (r/t (:named-graph (:config gs)) :graph_id :id :name) :ng)
-                                             (r/σ (r/≡ :ng/id (r/lit (:id g))))
-                                             (r/π :ng/id :ng/graph_id)
-                                             (r/to-sql))))
-                                 {:graph_id (:graph_id g)})]
-                      (if (= (:graph_id cg) (:graph_id g))
-                        (do
-                          (if (:new? g)
-                            (do
-                              (assert (:id ng))
-                              (jdbc/insert! (:con gs) (:named-graph (:config gs))
-                                            {:graph_id (:id ng)
-                                             :name graph-name}))
-                            (do
-                              (assert (:id g))
-                              (assert (:id ng))
-                              (jdbc/update! (:con gs)
-                                            (:named-graph (:config gs))
-                                            {:graph_id (:id ng)}
-                                            ["name = ?" graph-name])))
-                          true)
-                        false)))
+          (assert (:id ng))
+          (assert (satisfies? g/Graph ng))
+          (if-not (java-locking
+                   (get (deref (:locks gs)) graph-name)
+                   ;; TODO: don't need the lock at all, just cas using
+                   ;; update and check for cas success
+                   (let [cg (or (first (jdbc/query
+                                        (:con gs)
+                                        (-> (r/as (r/t (:named-graph (:config gs)) :graph_id :id :name) :ng)
+                                            (r/σ (r/≡ :ng/id (r/lit (:id g))))
+                                            (r/π :ng/id :ng/graph_id)
+                                            (r/to-sql))))
+                                {:graph_id (:graph_id g)})]
+                     (if (= (:graph_id cg) (:graph_id g))
+                       (do
+                         (if (:new? g)
+                           (do
+                             (assert (:id ng))
+                             (jdbc/insert! (:con gs) (:named-graph (:config gs))
+                                           {:graph_id (:id ng)
+                                            :name graph-name}))
+                           (do
+                             (assert (:id g))
+                             (assert (:id ng))
+                             (jdbc/update! (:con gs)
+                                           (:named-graph (:config gs))
+                                           {:graph_id (:id ng)}
+                                           ["name = ?" graph-name])))
+                         true)
+                       false)))
             (recur (inc i))
             ret))))
     (finally
