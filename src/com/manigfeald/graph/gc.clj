@@ -1,82 +1,78 @@
 (ns com.manigfeald.graph.gc
   (:require [clojure.java.jdbc :as jdbc]
-            [com.manigfeald.kvgc :as k]))
+            [com.manigfeald.kvgc :as k]
+            [com.manigfeald.graph.rel :as r])
+  (:import (java.util HashMap)))
+
+;; fascinatingly meta-circular, garbage collecting a graph, because
+;; garbage collection is a graph algorithm
 
 (defn gs-references [con config]
-  (for [[k v] config
-        i (case k
-            :named-graph (map
-                          (juxt (constantly k) :id)
-                          (jdbc/query con [(format "SELECT id FROM %s" v)]))
-            :graph (map
-                    (juxt (constantly k) :id)
-                    (jdbc/query con [(format "SELECT id FROM %s" v)]))
-            :fragment (map
-                       (juxt (constantly k) :id)
-                       (jdbc/query con [(format "SELECT id FROM %s" v)]))
-            :graph-fragments (map
-                              (juxt (constantly k) :id)
-                              (jdbc/query con [(format "SELECT id FROM %s" v)]))
-            :edge (map
-                   (juxt (constantly k) :id)
-                   (jdbc/query con [(format "SELECT id FROM %s" v)]))
-            :node (map
-                   (juxt (constantly k) :id)
-                   (jdbc/query con [(format "SELECT id FROM %s" v)]))
-            (if (= "attribute" (namespace k))
-              (map
-               (juxt (constantly k) :id)
-               (jdbc/query con [(format "SELECT id FROM %s" v)]))
-              (assert nil [k v])))]
-    [i nil]))
+  (let [ng (r/as (r/t (:named-graph config) :id :graph_id :name :tag) :ng)
+        g (r/as (r/t (:graph config) :id :tag) :g)
+        f (r/as (r/t (:fragment config) :id :tag :size) :g)
+        gfs (r/as (r/t (:graph-fragments config) :id :graph_id :fragment_id :tag) :gfs)
+        e (r/as (r/t (:graph-fragments config) :id :fragment_id :vid :src :dest :weight :tag) :e)
+        n (r/as (r/t (:graph-fragments config) :id :fragment_id :vid :tag) :n)
+        h (fn [table k]
+            (rest (jdbc/query con (r/to-sql (apply r/π table (for [c (r/columns table)
+                                                                   :when (= "id" (name c))]
+                                                               c)))
+                              :as-arrays? true
+                              :row-fn (fn [[id]] [k id]))))]
+    (for [[k v] config
+          i (case k
+              :named-graph (h ng k)
+              :graph (h g k)
+              :fragment (h f k)
+              :graph-fragments (h gfs k)
+              :edge (h e k)
+              :node (h n k)
+              (if (= "attribute" (namespace k))
+                (map
+                 (juxt (constantly k) :id)
+                 (jdbc/query con [(format "SELECT id FROM %s" v)]))
+                (assert nil [k v])))]
+      [i nil])))
 
-;; TODO: simplify the reference "graph" presented to the garbage
-;; collector
+(declare ^:dynamic tags)
+(declare ^:dynamic free-queue)
+
 (defrecord Heap [con config mark-state]
   k/Heap
   (references [heap ptr]
-    (let [[table id] ptr
+    (let [ng (r/as (r/t (:named-graph config) :id :graph_id :name :tag) :ng)
+          g (r/as (r/t (:graph config) :id :tag) :g)
+          f (r/as (r/t (:fragment config) :id :tag :size) :f)
+          gfs (r/as (r/t (:graph-fragments config) :id :graph_id :fragment_id :tag) :gfs)
+          [table id] ptr
           _ (assert table)
           _ (assert id)
           x (case table
-              :named-graph (for [{:keys [graph_id name]}
-                                 (jdbc/query con [(format "SELECT name, graph_id FROM %s WHERE id = ?" (:named-graph config)) id])]
-                             (do
-                               (assert graph_id name)
-                               [:graph graph_id]))
-              :graph (for [{:keys [id]}
-                           (jdbc/query con [(format "SELECT id FROM %s WHERE graph_id = ?" (:graph-fragments config)) id])]
-                       [:graph-fragments id])
+              :named-graph (rest (jdbc/query con (r/to-sql (r/π ng :ng/graph_id))
+                                             :as-arrays? true
+                                             :row-fn (fn [[id]] [:graph id])))
+              :graph (rest (jdbc/query con (r/to-sql (r/π gfs :gfs/graph_id))
+                                       :as-arrays? true
+                                       :row-fn (fn [[id]] [:graph-fragments id])))
               :fragment (for [[k v] config
                               :when (not (contains? #{:named-graph :graph :fragment :graph-fragments} k))
-                              {:keys [id]} (jdbc/query con [(format "SELECT id FROM %s WHERE fragment_id = ?" (k config)) id])]
-                          [k id])
-              :graph-fragments (for [{:keys [fragment_id graph_id]}
-                                     (jdbc/query
-                                      con
-                                      [(format "SELECT graph_id,fragment_id FROM %s WHERE id = ?" (:graph-fragments config)) id])
-                                     i [[:fragment fragment_id]
-                                        [:graph graph_id]]]
-                                 i)
-              :edge (for [{:keys [src dest fragment_id]}
-                          (jdbc/query con [(format "SELECT src,dest,fragment_id FROM %s WHERE id = ?" (:edge config)) id])
-                          n (concat (for [id [src dest]
-                                          i (jdbc/query con [(format "SELECT id FROM %s WHERE vid = ?" (:node config)) id])]
-                                      [:node (:id i)])
-                                    [[:fragment fragment_id]])]
-                      n)
-              :node (for [{:keys [fragment_id]} (jdbc/query con [(format "SELECT fragment_id FROM %s WHERE id = ?" (:node config)) id])]
-                      [:fragment fragment_id])
-              ;; TODO: fixme for vids
-              (if (= "attribute" (namespace table))
-                (for [{:keys [object_type object_vid  fragment_id]}
-                      (jdbc/query con [(format "SELECT object_type, object_vid, fragment_id FROM %s WHERE id = ?" (table config)) id])
-                      :let [ot (get config (keyword object_type))]
-                      {:keys [id]} (jdbc/query con [(format "SELECT id FROM %s WHERE vid = ?" ot) object_vid])
-                      i [[(keyword object_type) id]
-                         [:fragment fragment_id]]]
-                  i)
-                (assert nil [table ptr])))]
+                              item (rest (jdbc/query con
+                                                     (-> (r/as (r/t (k config) :fragment_id :id) :t)
+                                                         (r/σ (r/≡ :t/fragment_id (r/lit id)))
+                                                         (r/π :t/id)
+                                                         (r/to-sql))
+                                                     :as-arrays? true
+                                                     :row-fn (fn [[id]] [k id])))]
+                          item)
+              :graph-fragments (->> (jdbc/query con (r/to-sql (r/π gfs :gfs/graph_id :gfs/fragment_id))
+                                                :as-arrays? true
+                                                :row-fn (fn [[graph-id fragment-id]]
+                                                          [[:graph graph-id]
+                                                           [:fragment fragment-id]]))
+                                    (rest)
+                                    (apply concat))
+              [])]
       (assert (not (seq (for [[k v] x
                               :when (or (nil? k) (nil? v))]
                           k)))
@@ -91,27 +87,35 @@
                        [table [k v]])))
       x))
   (tag [heap ptr tag-value]
-    (let [tag-value (case tag-value
-                      true 1
-                      false 0)
-          [table id] ptr
-          table-name (get config table)]
-      (jdbc/update! con table-name {:tag tag-value} ["id = ?" id])
-      heap))
+    (.put tags ptr tag-value)
+    heap)
   (tag-value [heap ptr]
-    (let [[table id] ptr
-          table-name (get config table)]
-      (case (:tag (first (jdbc/query con [(format "SELECT tag FROM %s WHERE id = ?" table-name) id])))
-        nil true
-        1 true
-        0 false)))
+    (.get tags ptr))
   (free [heap ptr]
     (let [[table id] ptr
-          table-name (get config table)]
-      (jdbc/delete! con table-name ["id = ?" id])
+          fq (update-in free-queue [table] (fnil conj #{}) id)
+          fq (reduce
+              (fn [fq [table ids]]
+                (if (> (count ids) 10)
+                  (let [table-name (get config table)
+                        [a b] (reduce
+                               (fn [[a b] [c d]]
+                                 [(conj a c)
+                                  (conj b d )])
+                               [[] []]
+                               (for [id ids] ["id = ?" id]))
+                        q (into [(apply str (interpose " OR " a))] b)]
+                    (jdbc/delete! con table-name q)
+                    (update-in fq [table] empty))
+                  fq))
+              fq
+              fq)]
+      (set! free-queue fq)
       heap))
   (with-heap-lock [heap fun]
-    (fun heap))
+    (binding [tags (HashMap. 32)
+              free-queue {}]
+      (fun heap)))
   clojure.core.protocols/CollReduce
   (coll-reduce [_ fun]
     (reduce fun (gs-references con config)))
