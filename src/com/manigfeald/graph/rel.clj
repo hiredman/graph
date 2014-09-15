@@ -58,6 +58,12 @@
   ([a b & more]
      (apply sql-and (sql-and a b) more)))
 
+(defn less-than
+  ([a b]
+     (binary-operator "<" a b))
+  ([a b & more]
+     (apply sql-and (sql-and a b) more)))
+
 (defn ∧ [& args]
   (apply sql-and args))
 

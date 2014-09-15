@@ -171,7 +171,9 @@
     (finally
       (.unlock (.writeLock ^ReentrantReadWriteLock (:rw gs))))))
 
-(defmacro with-read-lock [gs & body]
+(defmacro with-read-lock
+  "execute body with graphstore's read lock"
+  [gs & body]
   `(let [gs# ~gs]
      (try
        (.lock (.readLock ^ReentrantReadWriteLock (:rw gs#)))
@@ -296,7 +298,9 @@
         l (.getLong bb)]
     (UUID. m l)))
 
-(defn vid-of-edge [gs id edge]
+(defn vid-of-edge
+  "get the raw vid bytes for an edge"
+  [gs id edge]
   (let [gfs (r/as (r/t (:graph-fragments (:config gs)) :fragment_id :graph_id)
                   :gfs)
         e (r/as (r/t (:edge (:config gs)) :src :dest :vid) :e)]

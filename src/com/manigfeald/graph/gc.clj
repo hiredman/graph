@@ -11,13 +11,18 @@
   (let [ng (r/as (r/t (:named-graph config) :id :graph_id :name :tag) :ng)
         g (r/as (r/t (:graph config) :id :tag) :g)
         f (r/as (r/t (:fragment config) :id :tag :size) :g)
-        gfs (r/as (r/t (:graph-fragments config) :id :graph_id :fragment_id :tag) :gfs)
-        e (r/as (r/t (:graph-fragments config) :id :fragment_id :vid :src :dest :weight :tag) :e)
+        gfs (r/as (r/t (:graph-fragments config)
+                       :id :graph_id :fragment_id :tag) :gfs)
+        e (r/as (r/t (:graph-fragments config)
+                     :id :fragment_id :vid :src :dest :weight :tag)
+                :e)
         n (r/as (r/t (:graph-fragments config) :id :fragment_id :vid :tag) :n)
         h (fn [table k]
-            (rest (jdbc/query con (r/to-sql (apply r/π table (for [c (r/columns table)
-                                                                   :when (= "id" (name c))]
-                                                               c)))
+            (rest (jdbc/query con
+                              (r/to-sql (apply r/π table
+                                               (for [c (r/columns table)
+                                                     :when (= "id" (name c))]
+                                                 c)))
                               :as-arrays? true
                               :row-fn (fn [[id]] [k id]))))]
     (for [[k v] config
@@ -44,19 +49,23 @@
     (let [ng (r/as (r/t (:named-graph config) :id :graph_id :name :tag) :ng)
           g (r/as (r/t (:graph config) :id :tag) :g)
           f (r/as (r/t (:fragment config) :id :tag :size) :f)
-          gfs (r/as (r/t (:graph-fragments config) :id :graph_id :fragment_id :tag) :gfs)
+          gfs (r/as (r/t (:graph-fragments config)
+                         :id :graph_id :fragment_id :tag) :gfs)
           [table id] ptr
           _ (assert table)
           _ (assert id)
           x (case table
               ;; TODO: fragments should not reference attributes,
               ;; nodes and edges should reference their attributes
-              :named-graph (rest (jdbc/query con (r/to-sql (r/π ng :ng/graph_id))
-                                             :as-arrays? true
-                                             :row-fn (fn [[id]] [:graph id])))
-              :graph (rest (jdbc/query con (r/to-sql (r/π gfs :gfs/graph_id))
-                                       :as-arrays? true
-                                       :row-fn (fn [[id]] [:graph-fragments id])))
+              :named-graph (rest
+                            (jdbc/query
+                             con (r/to-sql (r/π ng :ng/graph_id))
+                             :as-arrays? true
+                             :row-fn (fn [[id]] [:graph id])))
+              :graph (rest (jdbc/query
+                            con (r/to-sql (r/π gfs :gfs/graph_id))
+                            :as-arrays? true
+                            :row-fn (fn [[id]] [:graph-fragments id])))
               :fragment (for [[k v] config
                               :when (not
                                      (contains?
