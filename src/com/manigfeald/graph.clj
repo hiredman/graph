@@ -6,7 +6,8 @@
             [com.manigfeald.kvgc :as k]
             [com.manigfeald.graph.gc :as gc]
             [com.manigfeald.graph.alloc :refer [alloc]]
-            [com.manigfeald.graph.rel :as r])
+            [com.manigfeald.graph.rel :as r]
+            [com.manigfeald.graph.transpose :as t])
   (:import (java.util.concurrent.locks ReentrantReadWriteLock
                                        ReentrantLock
                                        Lock)
@@ -612,35 +613,23 @@
   (in-degree [this node]
     (count (g/predecessors this node)))
   (in-edges [this node]
-    (mapv (juxt (comp bytes->uuid :src)
-                (comp bytes->uuid :dest)
-                :weight)
-          (jdbc/query (:con gs) [(format "
-SELECT %s.src, %s.dest, %s.weight FROM %s
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.fragment_id = %s.id
-  JOIN %s ON %s.id = %s.graph_id
-  WHERE %s.id = ?
-  AND %s.dest = ?
-"
-                                         (:edge (:config gs))
-                                         (:edge (:config gs))
-                                         (:edge (:config gs))
-                                         (:edge (:config gs))
-                                         (:fragment (:config gs))
-                                         (:edge (:config gs))
-                                         (:fragment (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:fragment (:config gs))
-                                         (:graph (:config gs))
-                                         (:graph (:config gs))
-                                         (:graph-fragments (:config gs))
-                                         (:graph (:config gs))
-                                         (:edge (:config gs)))
-                                 id (vid-of node)])))
+    (let [gf (r/as (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
+                   :gf)
+          e (r/as (r/t (:edge (:config gs)) :id :src :dest :weight :fragment_id)
+                  :e)]
+      (rest
+       (jdbc/query
+        (:con gs)
+        (-> (r/⨝ e gf (r/≡ :e/fragment_id :gf/fragment_id))
+            (r/σ #{(r/≡ :gf/graph_id (r/lit id))
+                   (r/≡ :e/dest (r/lit (vid-of node)))})
+            (r/π :e/src :e/dest :e/weight)
+            (r/to-sql))
+        :as-arrays? true
+        :row-fn (fn [[src dest weight]]
+                  [(bytes->uuid src) (bytes->uuid dest) weight])))))
   (transpose [this]
-    (assert nil))
+    (t/->G this))
   g/WeightedGraph
   (weight [g]
     (partial g/weight g))

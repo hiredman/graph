@@ -50,7 +50,8 @@
     (gen/tuple (gen/return [:g/weight :nil-or-zero]) node node)
     (gen/tuple (gen/return [:g/remove-nodes :update]) node)
     (gen/tuple (gen/return [:g/remove-edges :update])
-               (gen/tuple node node gen/pos-int))]))
+               (gen/tuple node node gen/pos-int))
+    (gen/tuple (gen/return [:g/transpose :update]))]))
 
 (def graph-program
   (gen/vector graph-ops))
