@@ -96,3 +96,50 @@
             {:graph_id graph-id :fragment_id frag-id})
            (fun (biginteger frag-id))))
        (biginteger graph-id))))
+
+(defn copy-without [gs prev-graph frag-id table id]
+  {:pre [(number? prev-graph)
+         (number? frag-id)
+         (keyword? table)
+         (number? id)]}
+  (let [graph-id (first
+                  (vals
+                   (first
+                    (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))
+        _ (reduce
+           (fn [_ frag]
+             (if (= frag-id (:fragment_id frag))
+               (let [new-frag-id (first
+                                  (vals
+                                   (first
+                                    (jdbc/insert!
+                                     (:con gs)
+                                     (:fragment (:config gs))
+                                     {:size 0}))))
+                     c (atom 0)]
+                 (jdbc/insert! (:con gs) (:graph-fragments (:config gs))
+                               {:graph_id graph-id :fragment_id new-frag-id})
+                 (doseq [[k v] (:config gs)
+                         :when (not (contains? #{:fragment :named-graph :graph
+                                                 :graph-fragments} k))
+                         :let [qs (format
+                                   "SELECT * FROM %s WHERE fragment_id = ?" v)]
+                         item (jdbc/query (:con gs) [qs frag-id])
+                         :when (not (and (= frag-id (:fragment_id item))
+                                         (= table k)
+                                         (= id (:id item))))]
+                   (swap! c inc)
+                   (jdbc/insert! (:con gs) v (assoc (dissoc item :id :tag)
+                                               :fragment_id new-frag-id)))
+                 (jdbc/update! (:con gs) (:fragment (:config gs))
+                               {:size @c}
+                               ["id = ?" frag-id]))
+               (jdbc/insert!
+                (:con gs)
+                (:graph-fragments (:config gs))
+                (dissoc (assoc frag :graph_id graph-id) :id :tag))))
+           nil
+           (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE graph_id = ?"
+                                          (:graph-fragments (:config gs)))
+                                  prev-graph]))]
+    (biginteger graph-id)))

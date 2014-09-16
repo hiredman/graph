@@ -5,9 +5,11 @@
             [com.manigfeald.graph.readonly :as ro]
             [com.manigfeald.kvgc :as k]
             [com.manigfeald.graph.gc :as gc]
-            [com.manigfeald.graph.alloc :refer [alloc]]
+            [com.manigfeald.graph.alloc :refer [alloc
+                                                copy-without]]
             [com.manigfeald.graph.rel :as r]
-            [com.manigfeald.graph.transpose :as t])
+            [com.manigfeald.graph.transpose :as t]
+            [com.manigfeald.graph.ddl :as ddl])
   (:import (java.util.concurrent.locks ReentrantReadWriteLock
                                        ReentrantLock
                                        Lock)
@@ -28,122 +30,18 @@
                 (gc/->Heap con config (atom false))
                 (atom {})))
 
-(defn copy-without [gs prev-graph frag-id table id]
-  {:pre [(number? prev-graph)
-         (number? frag-id)
-         (keyword? table)
-         (number? id)]}
-  (let [graph-id (first
-                  (vals
-                   (first
-                    (jdbc/insert! (:con gs) (:graph (:config gs)) {:x 0}))))
-        _ (reduce
-           (fn [_ frag]
-             (if (= frag-id (:fragment_id frag))
-               (let [new-frag-id (first
-                                  (vals
-                                   (first
-                                    (jdbc/insert!
-                                     (:con gs)
-                                     (:fragment (:config gs))
-                                     {:size 0}))))
-                     c (atom 0)]
-                 (jdbc/insert! (:con gs) (:graph-fragments (:config gs))
-                               {:graph_id graph-id :fragment_id new-frag-id})
-                 (doseq [[k v] (:config gs)
-                         :when (not (contains? #{:fragment :named-graph :graph
-                                                 :graph-fragments} k))
-                         :let [qs (format
-                                   "SELECT * FROM %s WHERE fragment_id = ?" v)]
-                         item (jdbc/query (:con gs) [qs frag-id])
-                         :when (not (and (= frag-id (:fragment_id item))
-                                         (= table k)
-                                         (= id (:id item))))]
-                   (swap! c inc)
-                   (jdbc/insert! (:con gs) v (assoc (dissoc item :id :tag)
-                                               :fragment_id new-frag-id)))
-                 (jdbc/update! (:con gs) (:fragment (:config gs))
-                               {:size @c}
-                               ["id = ?" frag-id]))
-               (jdbc/insert!
-                (:con gs)
-                (:graph-fragments (:config gs))
-                (dissoc (assoc frag :graph_id graph-id) :id :tag))))
-           nil
-           (jdbc/query (:con gs) [(format "SELECT * FROM %s WHERE graph_id = ?"
-                                          (:graph-fragments (:config gs)))
-                                  prev-graph]))]
-    (biginteger graph-id)))
-
-(def text "varchar(1024)")
-(def vid "CHAR(16) FOR BIT DATA")
-
-(defn create-named-graph [v]
-  (jdbc/create-table-ddl
-   v
-   [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-   [:graph_id :int]
-   [:name text]
-   [:tag :int]))
-
-(defn create-graph [v]
-  (jdbc/create-table-ddl
-   v
-   [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-   [:x :int]
-   [:tag :int]))
-
-(defn create-fragment [v]
-  (jdbc/create-table-ddl
-   v
-   [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-   [:size :int]
-   [:tag :int]))
-
-(defn create-graph-fragments [v]
-  (jdbc/create-table-ddl
-   v
-   [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-   [:graph_id :int]
-   [:fragment_id :int]
-   [:tag :int]))
-
 (defn create-tables! [gs]
   ;; TODO: add indices
   (let [x (for[[k v] (:config gs)]
             (case k
-              :named-graph (create-named-graph v)
-              :graph (create-graph v)
-              :fragment (create-fragment v)
-              :graph-fragments (create-graph-fragments v)
-              :edge (jdbc/create-table-ddl
-                     v
-                     [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-                     [:fragment_id :int]
-                     [:vid vid]
-                     [:src vid]
-                     [:dest vid]
-                     [:weight :int]
-                     [:tag :int])
-              :node (jdbc/create-table-ddl
-                     v
-                     [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-                     [:fragment_id :int]
-                     [:vid vid]
-                     [:tag :int])
+              :named-graph (ddl/create-named-graph v)
+              :graph (ddl/create-graph v)
+              :fragment (ddl/create-fragment v)
+              :graph-fragments (ddl/create-graph-fragments v)
+              :edge (ddl/create-edge v)
+              :node (ddl/create-node v)
               (if (= "attribute" (namespace k))
-                (jdbc/create-table-ddl
-                 v
-                 [:id :int "PRIMARY KEY" "GENERATED ALWAYS AS IDENTITY"]
-                 [:fragment_id :int]
-                 [:object_type text]
-                 [:object_vid vid]
-                 [:name text]
-                 [:value (let [x (keyword (name k))]
-                           (if (= x :text)
-                             text
-                             x))]
-                 [:tag :int])
+                (ddl/create-attribute v k)
                 (assert nil [k v]))))]
     (apply jdbc/db-do-commands (:con gs) x)))
 
