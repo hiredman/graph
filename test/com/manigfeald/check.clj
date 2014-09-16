@@ -27,7 +27,7 @@
 (defn allocate-graph [gs]
   (alloc gs -1 (constantly nil)))
 
-(def node (gen/fmap (fn [i] (UUID. i 0)) gen/pos-int))
+(def node (gen/fmap (fn [i] (UUID. 0 i)) gen/pos-int))
 
 (def edges (gen/tuple node node))
 
