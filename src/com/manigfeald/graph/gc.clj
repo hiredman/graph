@@ -63,7 +63,10 @@
                              :as-arrays? true
                              :row-fn (fn [[id]] [:graph id])))
               :graph (rest (jdbc/query
-                            con (r/to-sql (r/π gfs :gfs/graph_id))
+                            con (r/to-sql
+                                 (->
+                                  (r/σ gfs (r/≡ :gfs/graph_id (r/lit id)))
+                                  (r/π :gfs/id)) )
                             :as-arrays? true
                             :row-fn (fn [[id]] [:graph-fragments id])))
               :fragment (for [[k v] config
