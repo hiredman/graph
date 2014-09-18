@@ -29,10 +29,16 @@
                 (gc/->Heap con config (atom false))
                 (atom {})))
 
-(defn graph-store [con config]
+(defn graph-store
+  "create a graph store, a graph store is logically an abstraction on
+  top of a database connection that lets you operate on graphs stored
+  in a database"
+  [con config]
   (gs con config))
 
-(defn create-tables! [gs]
+(defn create-tables!
+  "create tables in the config of a given graph store"
+  [gs]
   ;; TODO: add indices
   (let [x (for[[k v] (:config gs)]
             (case k
@@ -84,7 +90,9 @@
 
 (declare id-graph)
 
-(defn read-only-view [gs graph-name]
+(defn read-only-view
+  "returns a read only view of the named graph from the given graph store"
+  [gs graph-name]
   (with-read-lock gs
     (loop [i 0]
       (when (= i 100)
@@ -183,6 +191,8 @@
           ;; update and check for cas success
           (if-not (with-java-locking (get (deref (:locks gs)) graph-name)
                     (attempt-committing-new-graph gs g ng graph-name))
+            ;; TODO: maybe gc here? what if lots of graph garbage is
+            ;; generated in retries?
             (recur (inc i))
             ret))))
     (finally
@@ -191,6 +201,35 @@
           (gc gs)
           (finally
             (reset! (:gc-running? gs) false)))))))
+
+(defn transact!
+  "given a graph store and the name of a graph, call function with the
+  graph of that name, function must return a pair of
+  [transact-return-value, updated-graph]"
+  [gs graph-name fun]
+  (transact gs graph-name fun))
+
+(defn copy [gs graph-name1 graph-name2]
+  (with-read-lock gs
+    (loop [i 0]
+      (assert (> 100 i))
+      (let [ng' (r/as (r/t (:named-graph (:config gs)) :graph_id :id :name)
+                      :ng)
+            g (or (graph-record gs graph-name1 ng')
+                  {:graph_id (alloc gs -1)
+                   :new? true})]
+        (assert (attempt-committing-new-graph gs g g graph-name2))))))
+
+;; (defmacro with-graph [gs bindings & body]
+;;   (assert (even? (count bindings)))
+;;   ;; TODO: bind gs
+;;   (let [bindings (partition 2 bindings)]
+;;     ((reduce
+;;       (fn [k [n graph-name]]
+;;         (fn [body] `(transact ~gs (fn [~n] ~(k body)))))
+;;       identity
+;;       bindings)
+;;      `(do ~@body))))
 
 (defn vid-of [data]
   (let [b (byte-array 16)
@@ -240,15 +279,11 @@
     (rest
      (jdbc/query
       (:con gs)
-      (-> (r/⨝ (r/as n :src) (r/as e :e) (r/≡ :e/src
-                                              :src/vid))
+      (-> (r/⨝ (r/as n :src) (r/as e :e) (r/≡ :e/src :src/vid))
           (r/⨝ (r/as n :dest) (r/≡ :e/dest :dest/vid))
-          (r/⨝ (r/as gfs :ef) (r/≡ :e/fragment_id
-                                   :ef/fragment_id))
-          (r/⨝ (r/as gfs :sf) (r/≡ :src/fragment_id
-                                   :sf/fragment_id))
-          (r/⨝ (r/as gfs :df) (r/≡ :dest/fragment_id
-                                   :df/fragment_id))
+          (r/⨝ (r/as gfs :ef) (r/≡ :e/fragment_id :ef/fragment_id))
+          (r/⨝ (r/as gfs :sf) (r/≡ :src/fragment_id :sf/fragment_id))
+          (r/⨝ (r/as gfs :df) (r/≡ :dest/fragment_id :df/fragment_id))
           (r/σ #{(r/≡ :ef/graph_id (r/lit id))
                  (r/≡ :sf/graph_id (r/lit id))
                  (r/≡ :df/graph_id (r/lit id))
