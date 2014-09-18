@@ -12,7 +12,6 @@
             [clojure.test.check.clojure-test :refer [defspec]])
   (:import (java.util UUID)))
 
-
 (defn t-gs []
   (gs (let [con {:connection-uri "jdbc:derby:memory:check;create=true"}]
         (assoc con :connection (jdbc/get-connection con)))
@@ -76,17 +75,21 @@
               :view-edges-coll
               (set-equal (map (juxt g/src g/dest) loom')
                          (map (juxt g/src g/dest) graph')))]
-      (assert r [idx code loom' graph'])
+      (assert r [idx code loom' graph' (:id graph)])
       {:loom loom
        :graph graph
        :result (and result r)})
     (catch Exception e
       (throw (Exception. (print-str idx code) e)))))
 
+(defn time-limit [f]
+  (fn [init value]
+    (deref (future (f init value)) 1000 ::fail)))
+
 (defn run-program [lg g program]
   (:result
    (reduce
-    step-program
+    (time-limit step-program)
     {:loom lg
      :graph g
      :result true}
@@ -102,4 +105,7 @@
              (catch Exception _))
          gid (allocate-graph gs)
          g (id-graph gs gid)]
-     (run-program (g/weighted-digraph) g program))))
+     (try
+       (run-program (g/weighted-digraph) g program)
+       (finally
+         (gc gs))))))

@@ -107,7 +107,7 @@
         (swap! (:views gs) conj (:graph_id g))
         ro))))
 
-(defmacro java-locking [lock & body]
+(defmacro with-java-locking [lock & body]
   `(let [^java.util.concurrent.locks.Lock lock# ~lock]
      (try
        (.lock lock#)
@@ -115,63 +115,74 @@
        (finally
          (.unlock lock#)))))
 
+(defn attempt-committing-new-graph [gs g ng graph-name]
+  (let [ng' (r/as (r/t (:named-graph (:config gs))
+                       :graph_id :id :name)
+                  :ng)
+        cg (or (first
+                (jdbc/query
+                 (:con gs)
+                 (-> ng'
+                     (r/σ (r/≡ :ng/id (r/lit (:id g))))
+                     (r/π :ng/id :ng/graph_id)
+                     (r/to-sql))))
+               {:graph_id (:graph_id g)})]
+    (if (= (:graph_id cg) (:graph_id g))
+      (do
+        (if (:new? g)
+          (do
+            (assert (:id ng))
+            (jdbc/insert! (:con gs) (:named-graph (:config gs))
+                          {:graph_id (:id ng)
+                           :name graph-name}))
+          (do
+            (assert (:id g))
+            (assert (:id ng))
+            (jdbc/update! (:con gs)
+                          (:named-graph (:config gs))
+                          {:graph_id (:id ng)}
+                          ["name = ?" graph-name])))
+        true)
+      false)))
+
+(defn assoc-missing [m & pairs]
+  (assert (even? (count pairs)))
+  (reduce
+   (fn [m [k v]]
+     (if (contains? m k)
+       m
+       (assoc m k v)))
+   m
+   (partition-all 2 pairs)))
+
+(defn graph-record [gs graph-name ng]
+  (first
+   (jdbc/query
+    (:con gs)
+    (-> ng
+        (r/σ (r/≡ :ng/name (r/lit graph-name)))
+        (r/π :ng/id :ng/graph_id)
+        (r/to-sql)))))
+
 (defn transact [gs graph-name fun]
   (try
     (with-read-lock gs
       (loop [i 0]
-        (when (= i 100)
-          (assert nil))
+        (assert (> 100 i))
         (let [ng' (r/as (r/t (:named-graph (:config gs)) :graph_id :id :name)
                         :ng)
-              g (or (first
-                     (jdbc/query
-                      (:con gs)
-                      (-> ng'
-                          (r/σ (r/≡ :ng/name (r/lit graph-name)))
-                          (r/π :ng/id :ng/graph_id)
-                          (r/to-sql))))
+              g (or (graph-record gs graph-name ng')
                     {:graph_id (alloc gs -1)
                      :new? true})
               [ret ng] (fun (id-graph gs (biginteger (:graph_id g))))]
-          (swap! (:locks gs) (fn [locks]
-                               (if (contains? locks graph-name)
-                                 locks
-                                 (assoc locks graph-name (ReentrantLock.)))))
+          (swap! (:locks gs) assoc-missing graph-name (ReentrantLock.))
           (assert ng)
           (assert (:id ng) (pr-str ng))
           (assert (satisfies? g/Graph ng))
-          (if-not (java-locking
-                   (get (deref (:locks gs)) graph-name)
-                   ;; TODO: don't need the lock at all, just cas using
-                   ;; update and check for cas success
-                   (let [ng' (r/as (r/t (:named-graph (:config gs))
-                                        :graph_id :id :name)
-                                   :ng)
-                         cg (or (first
-                                 (jdbc/query
-                                  (:con gs)
-                                  (-> ng'
-                                      (r/σ (r/≡ :ng/id (r/lit (:id g))))
-                                      (r/π :ng/id :ng/graph_id)
-                                      (r/to-sql))))
-                                {:graph_id (:graph_id g)})]
-                     (if (= (:graph_id cg) (:graph_id g))
-                       (do
-                         (if (:new? g)
-                           (do
-                             (assert (:id ng))
-                             (jdbc/insert! (:con gs) (:named-graph (:config gs))
-                                           {:graph_id (:id ng)
-                                            :name graph-name}))
-                           (do
-                             (assert (:id g))
-                             (assert (:id ng))
-                             (jdbc/update! (:con gs)
-                                           (:named-graph (:config gs))
-                                           {:graph_id (:id ng)}
-                                           ["name = ?" graph-name])))
-                         true)
-                       false)))
+          ;; TODO: don't need the lock at all, just cas using
+          ;; update and check for cas success
+          (if-not (with-java-locking (get (deref (:locks gs)) graph-name)
+                    (attempt-committing-new-graph gs g ng graph-name))
             (recur (inc i))
             ret))))
     (finally
@@ -185,9 +196,9 @@
   (let [b (byte-array 16)
         bb (ByteBuffer/wrap b)]
     (if (instance? UUID data)
-      (do
-        (.putLong bb (.getMostSignificantBits ^UUID data))
-        (.putLong bb (.getLeastSignificantBits ^UUID data)))
+      (let [^UUID data data]
+        (.putLong bb (.getMostSignificantBits data))
+        (.putLong bb (.getLeastSignificantBits data)))
       (do
         (.putLong bb 0)
         (.putLong bb (long data))))
@@ -226,25 +237,26 @@
         gfs (r/t (:graph-fragments (:config gs)) :graph_id :fragment_id)
         n (r/t (:node (:config gs)) :vid :fragment_id)
         e (r/t (:edge (:config gs)) :src :dest :fragment_id)]
-    (rest (jdbc/query (:con gs)
-                      (-> (r/⨝ (r/as n :src) (r/as e :e) (r/≡ :e/src
-                                                              :src/vid))
-                          (r/⨝ (r/as n :dest) (r/≡ :e/dest :dest/vid))
-                          (r/⨝ (r/as gfs :ef) (r/≡ :e/fragment_id
-                                                   :ef/fragment_id))
-                          (r/⨝ (r/as gfs :sf) (r/≡ :src/fragment_id
-                                                   :sf/fragment_id))
-                          (r/⨝ (r/as gfs :df) (r/≡ :dest/fragment_id
-                                                   :df/fragment_id))
-                          (r/σ #{(r/≡ :ef/graph_id (r/lit id))
-                                 (r/≡ :sf/graph_id (r/lit id))
-                                 (r/≡ :df/graph_id (r/lit id))
-                                 (r/≡ known (r/lit (vid-of node)))})
-                          (r/π unknown)
-                          (r/to-sql))
-                      :as-arrays? true
-                      :row-fn (fn [[id]]
-                                (bytes->uuid id))))))
+    (rest
+     (jdbc/query
+      (:con gs)
+      (-> (r/⨝ (r/as n :src) (r/as e :e) (r/≡ :e/src
+                                              :src/vid))
+          (r/⨝ (r/as n :dest) (r/≡ :e/dest :dest/vid))
+          (r/⨝ (r/as gfs :ef) (r/≡ :e/fragment_id
+                                   :ef/fragment_id))
+          (r/⨝ (r/as gfs :sf) (r/≡ :src/fragment_id
+                                   :sf/fragment_id))
+          (r/⨝ (r/as gfs :df) (r/≡ :dest/fragment_id
+                                   :df/fragment_id))
+          (r/σ #{(r/≡ :ef/graph_id (r/lit id))
+                 (r/≡ :sf/graph_id (r/lit id))
+                 (r/≡ :df/graph_id (r/lit id))
+                 (r/≡ known (r/lit (vid-of node)))})
+          (r/π unknown)
+          (r/to-sql))
+      :as-arrays? true
+      :row-fn (fn [[id]] (bytes->uuid id))))))
 
 (defrecord G [gs id]
   g/EditableGraph
@@ -324,7 +336,6 @@
              id
              edges)))
   (remove-nodes* [g nodes]
-    ;; (println "remove-nodes" nodes)
     (->G gs (reduce
              (fn [gid node]
                (reduce
@@ -334,7 +345,6 @@
                 (let [gfs (r/t (:graph-fragments (:config gs))
                                :id :graph_id :fragment_id)
                       n (r/t (:node (:config gs)) :id :fragment_id :vid)]
-                  ;; :as-arrays? returns a column header, bonkers
                   (rest
                    (jdbc/query
                     (:con gs)
