@@ -14,7 +14,7 @@ library.
 
 ## Usage
 
-`[com.manigfeald/graph 0.1.0]`
+`[com.manigfeald/graph 0.1.1]`
 
 `(require '[com.manigfeald.graph :as g])`
 
