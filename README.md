@@ -10,9 +10,13 @@ the loom api, stored in derby.
   - a reference is a name
 - with a reference you can
   - transact
-   - similar to swap!
+      - similar to swap!
   - get a read only view
-   - similar to deref on an atom
+      - similar to deref on an atom
+      - a departure from the clojure state model because the view
+        really is read only, it doesn't support even creating a new
+        graph based on the read only view, but that may be possible to
+        add in the future
 - unreferenced data is gced
 
 ## Why?
