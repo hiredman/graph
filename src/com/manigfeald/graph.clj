@@ -17,12 +17,11 @@
            (java.lang.ref WeakReference)
            (java.util UUID)))
 
-;; TODO: use a reference queue
-
 (defrecord GraphStore [con config rw gc-running? views references heap locks])
 
 (defn gs [con config]
-  (->GraphStore con config
+  (->GraphStore con
+                config
                 (ReentrantReadWriteLock.)
                 (atom false)
                 (atom #{})
