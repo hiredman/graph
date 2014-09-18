@@ -18,9 +18,9 @@ the loom api, stored in derby.
 ## Why?
 
 I started writing a little app that was storing data in
-[http://db.apache.org/derby/](derby). Some of that data ended up
+[derby](http://db.apache.org/derby/). Some of that data ended up
 having a graph like shape, so I started implementing the
-[https://github.com/aysylu/loom](loom api) on top of it. It was all
+[loom api](https://github.com/aysylu/loom) on top of it. It was all
 mutable and gross, so I decided to make a proper go of it in a
 library.
 
