@@ -30,6 +30,9 @@
                 (gc/->Heap con config (atom false))
                 (atom {})))
 
+(defn graph-store [con config]
+  (gs con config))
+
 (defn create-tables! [gs]
   ;; TODO: add indices
   (let [x (for[[k v] (:config gs)]
