@@ -14,6 +14,10 @@ library.
 
 ## Usage
 
+`[com.manigfeald/graph 0.1.0]`
+
+`(require '[com.manigfeald.graph :as g])`
+
 - clojure state model
 - references to graphs
   - a reference is a name
