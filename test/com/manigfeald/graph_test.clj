@@ -163,3 +163,16 @@
         g (g/add-edges g [a b 0])
         g (g/remove-nodes g b)]
     (is (empty? (set (g/successors g a))))))
+
+(deftest t-add-edges
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        a (bytes->uuid (vid-of 0))
+        g (g/add-edges g [a a 0])
+        g (g/remove-nodes g 0)
+        g (g/add-edges g [a a 0])]
+    (is (= [[a a 0]] (g/edges g)))))

@@ -375,27 +375,35 @@
              id
              edges)))
   (remove-nodes* [g nodes]
-    (->G gs (reduce
-             (fn [gid node]
-               (reduce
-                (fn [gid [id fid]]
-                  (copy-without gs gid fid :node id))
-                gid
-                (let [gfs (r/t (:graph-fragments (:config gs))
-                               :id :graph_id :fragment_id)
-                      n (r/t (:node (:config gs)) :id :fragment_id :vid)]
-                  (rest
-                   (jdbc/query
-                    (:con gs)
-                    (-> (r/⨝ (r/as n :n) (r/as gfs :gfs) (r/≡ :n/fragment_id
-                                                              :gfs/fragment_id))
-                        (r/σ (r/∧ (r/≡ :n/vid (r/lit (vid-of node)))
-                                  (r/≡ :gfs/graph_id (r/lit gid))))
-                        (r/π :n/id :n/fragment_id)
-                        (r/to-sql))
-                    :as-arrays? true)))))
-             id
-             nodes)))
+    (let [g (g/remove-edges* g
+                             (concat (for [node nodes
+                                           succ (g/successors g node)]
+                                       [node succ])
+                                     (for [node nodes
+                                           succ (g/predecessors g node)]
+                                       [node succ])))
+          id (:id g)]
+      (->G gs (reduce
+               (fn [gid node]
+                 (reduce
+                  (fn [gid [id fid]]
+                    (copy-without gs gid fid :node id))
+                  gid
+                  (let [gfs (r/t (:graph-fragments (:config gs))
+                                 :id :graph_id :fragment_id)
+                        n (r/t (:node (:config gs)) :id :fragment_id :vid)]
+                    (rest
+                     (jdbc/query
+                      (:con gs)
+                      (-> (r/⨝ (r/as n :n) (r/as gfs :gfs) (r/≡ :n/fragment_id
+                                                                :gfs/fragment_id))
+                          (r/σ (r/∧ (r/≡ :n/vid (r/lit (vid-of node)))
+                                    (r/≡ :gfs/graph_id (r/lit gid))))
+                          (r/π :n/id :n/fragment_id)
+                          (r/to-sql))
+                      :as-arrays? true)))))
+               id
+               nodes))))
   g/Graph
   (nodes [this]
     (let [gfs (r/t (:graph-fragments (:config gs)) :id :graph_id :fragment_id)
