@@ -97,6 +97,13 @@ number of fragments and each fragment is composed of 10 or fewer
 attributes, nodes, or edges. fragments can be shared between
 graphs.
 
+## Testing
+   
+testing leans heavily on test.check and the existing loom api
+implementations by using test.check to generate sequences of graph
+operations and comparing the results of those operations on this
+implementation and the loom implementation
+
 ## TODO
 - `transact!` on multiple graphs
 
