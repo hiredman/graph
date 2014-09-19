@@ -7,16 +7,16 @@
 ;; fascinatingly meta-circular, garbage collecting a graph, because
 ;; garbage collection is a graph algorithm
 
-(defn gs-references [con config]
+(defn ^:dynamic gs-references [con config]
   (let [ng (r/as (r/t (:named-graph config) :id :graph_id :name :tag) :ng)
         g (r/as (r/t (:graph config) :id :tag) :g)
         f (r/as (r/t (:fragment config) :id :tag :size) :g)
         gfs (r/as (r/t (:graph-fragments config)
                        :id :graph_id :fragment_id :tag) :gfs)
-        e (r/as (r/t (:graph-fragments config)
+        e (r/as (r/t (:edge config)
                      :id :fragment_id :vid :src :dest :weight :tag)
                 :e)
-        n (r/as (r/t (:graph-fragments config) :id :fragment_id :vid :tag) :n)
+        n (r/as (r/t (:node config) :id :fragment_id :vid :tag) :n)
         h (fn [table k]
             (rest (jdbc/query con
                               (r/to-sql (apply r/π table
@@ -69,24 +69,22 @@
                                   (r/π :gfs/id)) )
                             :as-arrays? true
                             :row-fn (fn [[id]] [:graph-fragments id])))
-              :fragment (for [[k v] config
-                              :when (not
-                                     (contains?
-                                      #{:named-graph :graph
-                                        :fragment :graph-fragments}
-                                      k))
-                              item (rest
-                                    (jdbc/query
-                                     con
-                                     (-> (r/as (r/t (k config) :fragment_id :id)
-                                               :t)
-                                         (r/σ (r/≡ :t/fragment_id
-                                                   (r/lit id)))
-                                         (r/π :t/id)
-                                         (r/to-sql))
-                                     :as-arrays? true
-                                     :row-fn (fn [[id]] [k id])))]
-                          item)
+              :fragment (doall (for [[k v] config
+                                     :when (not
+                                            (contains?
+                                             #{:named-graph :graph
+                                               :fragment :graph-fragments}
+                                             k))
+                                     item (rest
+                                           (jdbc/query
+                                            con
+                                            (-> (r/as (r/t (k config) :fragment_id :id) :t)
+                                                (r/σ (r/≡ :t/fragment_id (r/lit id)))
+                                                (r/π :t/id)
+                                                (r/to-sql))
+                                            :as-arrays? true
+                                            :row-fn (fn [[id]] [k id])))]
+                                 item))
               :graph-fragments (->> (jdbc/query
                                      con
                                      (r/to-sql (r/π gfs
@@ -94,10 +92,8 @@
                                                     :gfs/fragment_id))
                                      :as-arrays? true
                                      :row-fn (fn [[graph-id fragment-id]]
-                                               [[:graph graph-id]
-                                                [:fragment fragment-id]]))
-                                    (rest)
-                                    (apply concat))
+                                               [:fragment fragment-id]))
+                                    (rest))
               [])]
       (assert (not (seq (for [[k v] x
                               :when (or (nil? k) (nil? v))]
@@ -119,10 +115,13 @@
     (.get ^HashMap tags ptr))
   (free [heap ptr]
     (let [[table id] ptr
+          _ (assert id table)
           fq (update-in free-queue [table] (fnil conj #{}) id)
           fq (reduce
               (fn [fq [table ids]]
-                (if (> (count ids) 10)
+                (if (and (seq ids)
+                         (or (> (count ids) 10)
+                             (#{:fragment :graph-fragments :graph :named-graph} table)))
                   (let [table-name (get config table)
                         [a b] (reduce
                                (fn [[a b] [c d]]
