@@ -311,33 +311,34 @@
                id
                (partition-all 10 nodes)))))
   (add-edges* [g edges]
-    (->G gs (reduce
-             (fn [graph edges]
-               (alloc
-                gs
-                graph
-                (fn [fragment-id]
-                  (doseq [[src target weight] edges]
-                    (when-not (g/has-node? (id-graph gs graph) src)
-                      (jdbc/insert! (:con gs)
-                                    (:node (:config gs))
-                                    {:fragment_id fragment-id
-                                     :vid (vid-of src)}))
-                    (when-not (g/has-node? (id-graph gs graph) target)
-                      (when-not (= src target)
+    (let [g (g/remove-edges* g edges)]
+      (->G gs (reduce
+               (fn [graph edges]
+                 (alloc
+                  gs
+                  graph
+                  (fn [fragment-id]
+                    (doseq [[src target weight] edges]
+                      (when-not (g/has-node? (id-graph gs graph) src)
                         (jdbc/insert! (:con gs)
                                       (:node (:config gs))
                                       {:fragment_id fragment-id
-                                       :vid (vid-of target)})))
-                    (jdbc/insert! (:con gs)
-                                  (:edge (:config gs))
-                                  {:vid (vid-of (UUID/randomUUID))
-                                   :src (vid-of src)
-                                   :fragment_id fragment-id
-                                   :dest (vid-of target)
-                                   :weight (or weight 0)})))))
-             id
-             (partition-all 10 edges))))
+                                       :vid (vid-of src)}))
+                      (when-not (g/has-node? (id-graph gs graph) target)
+                        (when-not (= src target)
+                          (jdbc/insert! (:con gs)
+                                        (:node (:config gs))
+                                        {:fragment_id fragment-id
+                                         :vid (vid-of target)})))
+                      (jdbc/insert! (:con gs)
+                                    (:edge (:config gs))
+                                    {:vid (vid-of (UUID/randomUUID))
+                                     :src (vid-of src)
+                                     :fragment_id fragment-id
+                                     :dest (vid-of target)
+                                     :weight (or weight 0)})))))
+               id
+               (partition-all 10 edges)))))
   (remove-edges* [g edges]
     (->G gs (reduce
              (fn [gid [src dest]]
