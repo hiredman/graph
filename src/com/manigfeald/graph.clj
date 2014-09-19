@@ -172,6 +172,9 @@
         (r/π :ng/id :ng/graph_id)
         (r/to-sql)))))
 
+(defn delete-graph! [gs graph-name]
+  (jdbc/delete! (:con gs) (:named-graph (:config gs)) ["name = ?" graph-name]))
+
 (defn transact [gs graph-name fun]
   (try
     (with-read-lock gs
