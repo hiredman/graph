@@ -380,8 +380,8 @@
                                            succ (g/successors g node)]
                                        [node succ])
                                      (for [node nodes
-                                           succ (g/predecessors g node)]
-                                       [node succ])))
+                                           pred (g/predecessors g node)]
+                                       [pred node])))
           id (:id g)]
       (->G gs (reduce
                (fn [gid node]
