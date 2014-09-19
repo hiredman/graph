@@ -1,7 +1,7 @@
 (ns com.manigfeald.graph.ddl
   (:require [clojure.java.jdbc :as jdbc]))
 
-(def text "varchar(1024)")
+(def text "varchar(5120)")
 
 (def vid "CHAR(16) FOR BIT DATA")
 

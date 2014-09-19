@@ -314,7 +314,8 @@
                id
                (partition-all 10 nodes)))))
   (add-edges* [g edges]
-    (let [g (g/remove-edges* g edges)]
+    (let [g (g/remove-edges* g edges)
+          id (:id g)]
       (->G gs (reduce
                (fn [graph edges]
                  (alloc
