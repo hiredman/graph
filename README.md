@@ -61,10 +61,11 @@ attribute name must be a keyword in the form `:int/foo` where `int` is
 the type of the value of the attribute and `foo` is the name of the
 attribute.
 
-given a graph store you can do three operations:
+given a graph store you can do some operations:
 1. `create-tables!`
 2. `transact!`
 3. `read-only-view`
+4. `delete-graph!`
 
 `create-tables!` creates the tables given in `config`
 
@@ -87,6 +88,15 @@ collection of the bits it references. the read only view is
 `Closeable` and calling `(.close ...)` will make sure it is available
 for gc asap instead of waiting for the jvm to clear weakrefs under
 memory pressure.
+
+this library provides two additional functions for working with its
+graphs beyond the loom api:
+
+1. `attribute-node-search`
+2. `attribute-edge-search`
+
+these functions let you find nodes and edges annotated with the given
+attributes
 
 ## Structural Sharing
 

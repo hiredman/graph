@@ -257,7 +257,7 @@
   [gs id edge]
   (let [gfs (r/as (r/t (:graph-fragments (:config gs)) :fragment_id :graph_id)
                   :gfs)
-        e (r/as (r/t (:edge (:config gs)) :src :dest :vid) :e)]
+        e (r/as (r/t (:edge (:config gs)) :src :dest :vid :fragment_id) :e)]
     (second
      (jdbc/query
       (:con gs)
@@ -265,9 +265,10 @@
           (r/σ #{(r/≡ :gfs/graph_id (r/lit id))
                  (r/≡ :e/src (r/lit (vid-of (g/src edge))))
                  (r/≡ :e/dest (r/lit (vid-of (g/dest edge))))})
-          (r/π :e/vid))
+          (r/π :e/vid)
+          (r/to-sql))
       :as-arrays? true
-      :row-fn (fn [[vid]] vid)))))
+      :row-fn (fn [[vid]] (bytes->uuid vid))))))
 
 (defn cessors [gs id node prefix]
   (let [known (case prefix
@@ -594,6 +595,70 @@
                 (r/to-sql))
           r (or (first (map :weight (jdbc/query (:con gs) s))) 0)]
       r)))
+
+(defn attribute-node-search [graph k v]
+  (let [gs (:gs graph)
+        type (namespace k)
+        table-for-value-type (first (for [[k v] (:config gs)
+                                          :when (= "attribute" (namespace k))
+                                          :when (= type (name k))]
+                                      v))
+        attribute-name (name k)
+        object-type "node"
+        gfs (r/as (r/t (:graph-fragments (:config gs))
+                       :fragment_id :graph_id)
+                  :gfs)
+        a (r/as (r/t table-for-value-type
+                     :value :fragment_id :object_type :object_vid :value :id
+                     :name)
+                :a)]
+    (rest (jdbc/query
+           (:con gs)
+           (-> (r/⨝ gfs a (r/≡ :a/fragment_id :gfs/fragment_id))
+               (r/σ #{(r/≡ :gfs/graph_id (r/lit (:id graph)))
+                      (r/≡ :a/object_type (r/lit object-type))
+                      (r/≡ :a/name (r/lit attribute-name))
+                      (r/≡ :a/value (r/lit v))})
+               (r/π :a/object_vid)
+               (r/to-sql))
+           :as-arrays? true
+           :row-fn (fn [[id]] (bytes->uuid id))))))
+
+(defn attribute-edge-search [graph k v]
+  (let [gs (:gs graph)
+        type (namespace k)
+        table-for-value-type (first (for [[k v] (:config gs)
+                                          :when (= "attribute" (namespace k))
+                                          :when (= type (name k))]
+                                      v))
+        attribute-name (name k)
+        object-type "edge"
+        gfs (r/as (r/t (:graph-fragments (:config gs))
+                       :fragment_id :graph_id)
+                  :gfs)
+        gfse (r/as (r/t (:graph-fragments (:config gs))
+                        :fragment_id :graph_id)
+                   :gfse)
+        a (r/as (r/t table-for-value-type
+                     :value :fragment_id :object_type :object_vid :value :id
+                     :name)
+                :a)
+        e (r/as (r/t (:edge (:config (:gs graph))) :src :dest :vid :weight :fragment_id) :e)]
+    (rest (jdbc/query
+           (:con gs)
+           (-> (r/⨝ gfs a (r/≡ :a/fragment_id :gfs/fragment_id))
+               (r/⨝ e (r/≡ :e/vid :a/object_vid))
+               (r/⨝ gfse (r/≡ :e/fragment_id :gfse/fragment_id))
+               (r/σ #{(r/≡ :gfs/graph_id (r/lit (:id graph)))
+                      (r/≡ :gfse/graph_id (r/lit (:id graph)))
+                      (r/≡ :a/object_type (r/lit object-type))
+                      (r/≡ :a/name (r/lit attribute-name))
+                      (r/≡ :a/value (r/lit v))})
+               (r/π :e/src :e/dest :e/weight)
+               (r/to-sql))
+           :as-arrays? true
+           :row-fn (fn [[src dest weight]]
+                     [(bytes->uuid src) (bytes->uuid dest) weight])))))
 
 (defn id-graph [gs id]
   (->G gs id))
