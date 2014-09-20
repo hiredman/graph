@@ -1,4 +1,4 @@
-(defproject com.manigfeald/graph "0.2.0-SNAPSHOT"
+(defproject com.manigfeald/graph "0.2.0"
   :description "FIXME: write description"
   :url "http://github.com/hiredman/graph"
   :license {:name "Eclipse Public License"
