@@ -84,19 +84,22 @@
 
 (defn time-limit [f]
   (fn [init value]
-    (deref (future (f init value)) 1000 ::fail)))
+    (let [r (deref (future (f init value)) 1000 ::fail)]
+      (if (= r ::fail)
+        (assert nil "timeout")
+        r))))
 
 (defn run-program [lg g program]
   (:result
    (reduce
-    (time-limit step-program)
+    step-program
     {:loom lg
      :graph g
      :result true}
     (map-indexed vector program))))
 
 (defspec regular-graph
-  500
+  100000
   (prop/for-all
    [program graph-program]
    (let [gs (t-gs)

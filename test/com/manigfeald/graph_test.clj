@@ -24,7 +24,9 @@
 
 (deftest a-test
   (let [gs (t-gs)
-        _ (create-tables! gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
         graph-id (allocate-graph gs)
         _ (is graph-id)
         g (id-graph gs graph-id)
@@ -164,6 +166,26 @@
         g (g/remove-nodes g b)]
     (is (empty? (set (g/successors g a))))))
 
+(deftest t-01
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        a (bytes->uuid (vid-of 0))
+        b (bytes->uuid (vid-of 1))]
+    (is (= (-> (g/weighted-digraph)
+               (g/add-nodes a)
+               (g/add-edges [a b 0])
+               (g/nodes)
+               (set))
+           (-> g
+               (g/add-nodes a)
+               (g/add-edges [a b 0])
+               (g/nodes)
+               (set))))))
+
 (deftest t-add-edges
   (let [gs (t-gs)
         _ (try
@@ -197,3 +219,87 @@
                (g/add-nodes b)
                (g/edges)
                (->> (map (juxt g/src g/dest))))))))
+
+(deftest t-in-degree
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        a (bytes->uuid (vid-of 0))
+        b (bytes->uuid (vid-of 1))]
+    (is (= (-> (g/weighted-digraph)
+               (g/add-edges [a b 0])
+               (g/add-edges [a b 0])
+               (g/in-degree b))
+           (-> g
+               (g/add-edges [a b 0])
+               (g/add-edges [a b 0])
+               (g/in-degree b))))))
+
+(deftest t-02
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        a (bytes->uuid (vid-of 0))
+        b (bytes->uuid (vid-of 1))]
+    (is (= (-> (g/weighted-digraph)
+               (g/add-nodes a)
+               (g/add-edges [b a 0])
+               (g/nodes)
+               (set))
+           (-> g
+               (g/add-nodes a)
+               (g/add-edges [b a 0])
+               (g/nodes)
+               (set))))))
+
+(deftest t-03
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        a (bytes->uuid (vid-of 0))
+        b (bytes->uuid (vid-of 1))
+        c (bytes->uuid (vid-of 2))
+        d (bytes->uuid (vid-of 3))]
+    (is (= [c] (-> g
+                   (g/add-edges [a b 0])
+                   (g/add-edges [b c 0])
+                   (g/add-edges [c d 0])
+                   (g/predecessors d))))
+    (is (= [b] (-> g
+                   (g/add-edges [a b 0])
+                   (g/add-edges [b c 0])
+                   (g/add-edges [c d 0])
+                   (g/predecessors c))))))
+
+(deftest t-04
+  (let [gs (t-gs)
+        _ (try
+            (create-tables! gs)
+            (catch Exception _))
+        gid (allocate-graph gs)
+        g (id-graph gs gid)
+        a (bytes->uuid (vid-of 0))
+        b (bytes->uuid (vid-of 1))
+        c (bytes->uuid (vid-of 2))
+        d (bytes->uuid (vid-of 3))]
+    (is (= [a] (-> g
+                   (g/add-edges [a b 0])
+                   (g/add-edges [b c 0])
+                   (g/add-edges [c d 0])
+                   (a/add-attr a :text/foo "hello world")
+                   (attribute-node-search :text/foo "hello world"))))
+    (is (= [[a b 0]] (-> g
+                         (g/add-edges [a b 0])
+                         (g/add-edges [b c 0])
+                         (g/add-edges [c d 0])
+                         (a/add-attr [a b 0] :text/foo "hello world")
+                         (attribute-edge-search :text/foo "hello world"))))))
